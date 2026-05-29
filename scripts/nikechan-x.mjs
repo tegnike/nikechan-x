@@ -115,6 +115,24 @@ export function parseApprovalReply(text, candidateIds = []) {
   return { action: 'unknown', reason: 'no approval intent detected' };
 }
 
+export function validateReleaseModeChange(mode, confirm = '') {
+  const normalized = String(mode || '').trim();
+  if (!['dry-run', 'canary-live', 'live'].includes(normalized)) {
+    return { ok: false, reason: 'mode must be dry-run, canary-live, or live' };
+  }
+  if (normalized === 'dry-run') {
+    return { ok: true, mode: normalized, liveArmed: false };
+  }
+  if (confirm !== 'LIVE_X_POSTING') {
+    return { ok: false, mode: normalized, reason: 'live modes require --confirm LIVE_X_POSTING' };
+  }
+  return { ok: true, mode: normalized, liveArmed: true };
+}
+
+function isLiveMode(mode) {
+  return mode === 'live' || mode === 'canary-live';
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args.shift();
@@ -153,6 +171,12 @@ async function main() {
       case 'doctor':
         await commandDoctor(readOptions(args));
         break;
+      case 'preflight-live':
+        await commandPreflightLive(readOptions(args));
+        break;
+      case 'release-mode':
+        await commandReleaseMode(readOptions(args));
+        break;
       case 'help':
       case undefined:
         printHelp();
@@ -181,6 +205,8 @@ Commands:
   post --action tweet|reply|quote|retweet --text "..." [--tweet-id id] [--source manual]
   state
   doctor
+  preflight-live
+  release-mode [--set dry-run|canary-live|live] [--confirm LIVE_X_POSTING]
 `);
 }
 
@@ -484,6 +510,79 @@ async function commandState(options) {
 }
 
 async function commandDoctor(options) {
+  const summary = await buildDoctorSummary();
+  printJsonOrMarkdown(summary, options);
+  if (!summary.ok && options.strict !== 'false') process.exitCode = 2;
+}
+
+async function commandPreflightLive(options) {
+  const doctor = await buildDoctorSummary();
+  const pending = await readPending();
+  const mode = releaseMode();
+  const checks = [
+    ...doctor.checks,
+    { name: 'release-mode:live', ok: isLiveMode(mode), mode },
+    { name: 'live:armed', ok: process.env.NIKECHAN_X_LIVE_ARMED === 'yes' },
+    { name: 'pending:self-tweet', ok: Boolean(pending), pendingId: pending?.id || null },
+  ];
+  if (pending) {
+    checks.push({
+      name: 'pending:guard',
+      ok: pending.candidates.every((candidate) => candidate.guard?.ok),
+      blocked: pending.candidates.filter((candidate) => !candidate.guard?.ok).map((candidate) => candidate.id),
+    });
+  }
+  const summary = {
+    ok: checks.every((check) => check.ok),
+    releaseMode: mode,
+    liveArmed: process.env.NIKECHAN_X_LIVE_ARMED === 'yes',
+    pendingId: pending?.id || null,
+    checks,
+  };
+  printJsonOrMarkdown(summary, options);
+  if (!summary.ok && options.strict !== 'false') process.exitCode = 2;
+}
+
+async function commandReleaseMode(options) {
+  const nextMode = options.set || options.mode;
+  if (!nextMode) {
+    printJsonOrMarkdown({
+      releaseMode: releaseMode(),
+      liveArmed: process.env.NIKECHAN_X_LIVE_ARMED === 'yes',
+      envPath: resolve(ROOT, '.env'),
+    }, options);
+    return;
+  }
+
+  const validation = validateReleaseModeChange(nextMode, options.confirm || '');
+  if (!validation.ok) throw new Error(validation.reason);
+
+  const envPath = resolve(ROOT, '.env');
+  await setEnvValues(envPath, {
+    NIKECHAN_X_RELEASE_MODE: validation.mode,
+    NIKECHAN_X_LIVE_ARMED: validation.liveArmed ? 'yes' : 'no',
+  });
+  process.env.NIKECHAN_X_RELEASE_MODE = validation.mode;
+  process.env.NIKECHAN_X_LIVE_ARMED = validation.liveArmed ? 'yes' : 'no';
+
+  await recordActivity('release-mode', {
+    mode: validation.mode,
+    liveArmed: validation.liveArmed,
+  });
+  await updateRunState({
+    lastReleaseModeChangeAt: new Date().toISOString(),
+    configuredReleaseMode: validation.mode,
+    liveArmed: validation.liveArmed,
+  });
+  printJsonOrMarkdown({
+    ok: true,
+    releaseMode: validation.mode,
+    liveArmed: validation.liveArmed,
+    envPath,
+  }, options);
+}
+
+async function buildDoctorSummary() {
   const checks = [];
   const requireEnv = (name) => {
     const ok = Boolean(process.env[name]);
@@ -506,14 +605,13 @@ async function commandDoctor(options) {
   checks.push(await checkXMe());
   checks.push(await checkDiscordBot());
 
-  const summary = {
+  return {
     ok: checks.every((check) => check.ok),
     releaseMode: releaseMode(),
+    liveArmed: process.env.NIKECHAN_X_LIVE_ARMED === 'yes',
     accountName: ACCOUNT_NAME,
     checks,
   };
-  printJsonOrMarkdown(summary, options);
-  if (!summary.ok && options.strict !== 'false') process.exitCode = 2;
 }
 
 async function postTweet(input) {
@@ -534,6 +632,7 @@ async function postTweet(input) {
   if (mode !== 'live' && mode !== 'canary-live') {
     return { dryRun: true, mode, action, text: input.text, tweetId: input.tweetId || null, url: null, source: input.source };
   }
+  assertLivePostingAllowed(mode);
 
   const result = await callXApi(input);
   await recordTweet(result);
@@ -857,8 +956,32 @@ async function loadDotenv(path) {
   }
 }
 
+async function setEnvValues(path, values) {
+  const existing = existsSync(path) ? await readFile(path, 'utf8') : '';
+  const lines = existing ? existing.split(/\r?\n/) : [];
+  const remaining = new Set(Object.keys(values));
+  const next = lines.map((line) => {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/u);
+    if (!match || !(match[1] in values)) return line;
+    const key = match[1];
+    remaining.delete(key);
+    return `${key}=${values[key]}`;
+  });
+  for (const key of remaining) {
+    next.push(`${key}=${values[key]}`);
+  }
+  await writeFile(path, `${next.filter((line, index) => line !== '' || index < next.length - 1).join('\n')}\n`, { mode: 0o600 });
+}
+
 function releaseMode() {
   return process.env.NIKECHAN_X_RELEASE_MODE || 'dry-run';
+}
+
+function assertLivePostingAllowed(mode) {
+  if (!isLiveMode(mode)) return;
+  if (process.env.NIKECHAN_X_LIVE_ARMED !== 'yes') {
+    throw new Error('live posting blocked: set NIKECHAN_X_LIVE_ARMED=yes via release-mode --set live --confirm LIVE_X_POSTING');
+  }
 }
 
 function statePath(name) {

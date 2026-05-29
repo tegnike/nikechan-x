@@ -17,6 +17,7 @@ node scripts/nikechan-x.mjs resolve --text "<Discord返信本文>" --notify
 node scripts/nikechan-x.mjs pending
 node scripts/nikechan-x.mjs approve --ids <番号>
 node scripts/nikechan-x.mjs cancel --reason "<理由>"
+node scripts/nikechan-x.mjs preflight-live
 ```
 
 ## 方針
@@ -55,7 +56,8 @@ node scripts/nikechan-x.mjs resolve --text "1で" --notify
 ```
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` ならX APIは呼ばず、記録だけ行う。
-`live` または `canary-live` のときだけX API投稿を実行する。
+`live` または `canary-live` かつ `NIKECHAN_X_LIVE_ARMED=yes` のときだけX API投稿を実行する。
+liveへ切り替える前は `preflight-live` で疎通、pending、guardを確認する。
 
 ## 見送り時
 
