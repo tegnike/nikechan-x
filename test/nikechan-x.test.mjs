@@ -66,7 +66,8 @@ test('propose and approve dry-run store state without credentials', async () => 
       encoding: 'utf8',
     });
     assert.equal(proposed.status, 0, proposed.stderr);
-    assert.match(proposed.stdout, /self-tweet候補/u);
+    assert.match(proposed.stdout, /話題タイプ: memory/u);
+    assert.doesNotMatch(proposed.stdout, /node scripts\/nikechan-x\.mjs/u);
 
     const approved = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'approve', '--ids', '1'], {
       cwd: join(import.meta.dirname, '..'),

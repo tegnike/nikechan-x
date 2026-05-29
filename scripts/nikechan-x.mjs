@@ -312,7 +312,7 @@ async function commandNotifyPending(options) {
   const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
   if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
   const content = [
-    'Xセルフツイート候補です。承認する番号、修正指示、または見送りを返信してください。',
+    'Xセルフツイート候補です。このスレッドで「1で」「2で」「修正: ...」「見送り」のように返信してください。',
     '',
     formatPendingMarkdown(pending),
   ].join('\n');
@@ -927,19 +927,16 @@ function printPendingMarkdown(pending) {
 
 function formatPendingMarkdown(pending) {
   const lines = [];
-  lines.push(`self-tweet候補 pending=${pending.id}`);
-  lines.push(`sourceMode: ${pending.sourceMode}`);
+  lines.push(`話題タイプ: ${pending.sourceMode}`);
   lines.push('');
   for (const candidate of pending.candidates) {
-    const status = candidate.guard.ok ? 'OK' : `BLOCKED: ${candidate.guard.errors.join('; ')}`;
+    const status = candidate.guard.ok ? 'OK' : `要確認: ${candidate.guard.errors.join('; ')}`;
     lines.push(`${candidate.id}. ${candidate.text}`);
     if (candidate.reason) lines.push(`   狙い: ${candidate.reason}`);
-    lines.push(`   guard: ${status}`);
-    if (candidate.guard.warnings.length) lines.push(`   warning: ${candidate.guard.warnings.join('; ')}`);
+    lines.push(`   安全確認: ${status}`);
+    if (candidate.guard.warnings.length) lines.push(`   注意: ${candidate.guard.warnings.join('; ')}`);
     lines.push('');
   }
-  lines.push('承認する場合: node scripts/nikechan-x.mjs approve --ids <番号>');
-  lines.push('見送る場合: node scripts/nikechan-x.mjs cancel --reason "<理由>"');
   return lines.join('\n');
 }
 
