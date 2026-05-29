@@ -6,6 +6,9 @@ services:
     restart: unless-stopped
     working_dir: /profile
     user: "1000:1000"
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - .:/profile
     environment:
