@@ -317,6 +317,22 @@ async function commandPost(options) {
     tweetId: options.tweetId || options['tweet-id'],
     source: options.source || 'manual',
   });
+  await recordActivity('manual-post', {
+    action,
+    mode: releaseMode(),
+    result,
+  });
+  await updateRunState({
+    lastManualPostAt: new Date().toISOString(),
+    lastManualPostAction: action,
+    lastManualPostMode: releaseMode(),
+  });
+  await recordTwitterRunState('manual_last_post', {
+    at: new Date().toISOString(),
+    action,
+    mode: releaseMode(),
+    result,
+  });
   printJsonOrMarkdown(result, options);
 }
 
@@ -336,12 +352,17 @@ async function postTweet(input) {
   if (!['tweet', 'reply', 'quote', 'retweet'].includes(action)) {
     throw new Error(`unsupported action: ${action}`);
   }
-  if ((action === 'tweet' || action === 'reply' || action === 'quote') && !guardText(input.text).ok) {
+  if (['reply', 'quote', 'retweet'].includes(action)) {
+    required(input.tweetId, '--tweet-id');
+  }
+  if (['tweet', 'reply', 'quote'].includes(action)) {
     const guard = guardText(input.text);
-    throw new Error(`text blocked by guard: ${guard.errors.join('; ')}`);
+    if (!guard.ok) {
+      throw new Error(`text blocked by guard: ${guard.errors.join('; ')}`);
+    }
   }
   if (mode !== 'live' && mode !== 'canary-live') {
-    return { dryRun: true, mode, action, text: input.text, tweetId: input.tweetId || null, url: null };
+    return { dryRun: true, mode, action, text: input.text, tweetId: input.tweetId || null, url: null, source: input.source };
   }
 
   const result = await callXApi(input);

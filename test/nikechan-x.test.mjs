@@ -64,3 +64,50 @@ test('propose and approve dry-run store state without credentials', async () => 
     await rm(stateDir, { recursive: true, force: true });
   }
 });
+
+test('manual post dry-run validates tweet id and records state', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
+  try {
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+    const missingId = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'post', '--action', 'reply', '--text', '返信のテストです。'], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.notEqual(missingId.status, 0);
+    assert.match(missingId.stderr, /missing --tweet-id/u);
+
+    const posted = spawnSync(process.execPath, [
+      'scripts/nikechan-x.mjs',
+      'post',
+      '--action',
+      'reply',
+      '--tweet-id',
+      '1234567890',
+      '--text',
+      '返信のテストです。記録だけ残します。',
+    ], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(posted.status, 0, posted.stderr);
+    assert.match(posted.stdout, /dryRun/u);
+
+    const state = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'state', '--json'], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(state.status, 0, state.stderr);
+    assert.match(state.stdout, /lastManualPostAction/u);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
