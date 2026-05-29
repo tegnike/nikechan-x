@@ -1,0 +1,58 @@
+# secrets
+.env
+auth.json
+*.token
+*.key
+*.pem
+
+# runtime state
+state.db*
+sessions/
+logs/
+gateway/
+gateway.pid
+gateway.lock
+gateway_state.json
+auth.lock
+.update_check
+.skills_prompt_snapshot.json
+.no-bundled-skills
+.clean_shutdown
+
+# caches / generated files
+cache/
+audio_cache/
+image_cache/
+pairing/
+plans/
+sandboxes/
+skins/
+home/
+hooks/
+workspace/
+local/
+__pycache__/
+*.pyc
+.DS_Store
+
+# cron runtime state
+cron/jobs.json
+cron/.tick.lock
+cron/output/
+
+# Hermes bundled skills and runtime metadata
+skills/.hub/
+skills/.bundled_manifest
+skills/.curator_state
+skills/.usage.json
+skills/.usage.json.lock
+skills/.curator_backups/
+
+# local audit/state snapshots
+state-snapshots/
+pastes/
+context_length_cache.yaml
+models_dev_cache.json
+ollama_cloud_models_cache.json
+.restart_last_processed.json
+.update_exit_code
