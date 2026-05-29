@@ -1,0 +1,23 @@
+services:
+  nikechan-x:
+    build:
+      context: .
+    container_name: nikechan-x
+    restart: unless-stopped
+    working_dir: /profile
+    user: "1000:1000"
+    volumes:
+      - .:/profile
+    environment:
+      - HOME=/home/node
+      - HERMES_HOME=/profile
+      - HERMES_ACCEPT_HOOKS=1
+      - TZ=${TZ:-Asia/Tokyo}
+    command:
+      - python3
+      - -m
+      - hermes_cli.main
+      - gateway
+      - run
+      - --replace
+      - --accept-hooks

@@ -2,10 +2,10 @@
 
 AIニケちゃんのX専用 Hermes profile リポジトリです。
 
-このリポジトリはサブMac上の live profile そのものです。
+このリポジトリはVPS上の live profile そのものです。公開Discord用Hermesが動くサブPCとは別マシンに置きます。
 
 ```text
-/Users/nikenike/.hermes/profiles/nikechan-x
+/opt/nikechan-x
 ```
 
 ## 役割
@@ -29,7 +29,8 @@ AIニケちゃんのX専用 Hermes profile リポジトリです。
 - `memories/`: 固定記憶とX運用メモ
 - `skills/`: X用Hermes skill
 - `cron/jobs.template.json`: Git管理するcron定義テンプレート
-- `launchd/`: LaunchDaemon定義
+- `Dockerfile`, `docker-compose.yml`: VPS上のHermes gateway実行環境
+- `systemd/`: systemd service定義
 - `scripts/`: installや運用用script
 
 ## Git管理しないもの
@@ -41,27 +42,33 @@ AIニケちゃんのX専用 Hermes profile リポジトリです。
 
 ## 初期運用
 
-1. `.env.example` を参考に、サブMac上で `.env` を作成する
-2. X credentialとDiscord credentialはDiscord公開profileとは別にする
-3. `launchd/ai.hermes.gateway-nikechan-x.plist` をinstallする
+1. `.env.example` を参考に、VPS上で `/opt/nikechan-x/.env` を作成する
+2. X credentialとSupabase credentialはこのprofileにだけ置く
+3. `scripts/install-systemd.sh` を実行する
 4. 起動後、マスター専用Discordチャンネルでdry-runから確認する
 
 ## Commands
 
 ```bash
-cd /Users/nikenike/.hermes/profiles/nikechan-x
+cd /opt/nikechan-x
 git status --short
 ```
 
-LaunchDaemon install:
+Build:
 
 ```bash
-scripts/install-launchdaemon.sh
+docker compose build
+```
+
+systemd install:
+
+```bash
+scripts/install-systemd.sh
 ```
 
 Gateway status:
 
 ```bash
-launchctl print system/ai.hermes.gateway-nikechan-x
-tail -n 100 logs/gateway.log
+systemctl status ai.hermes.gateway-nikechan-x --no-pager
+docker compose logs --tail=100 nikechan-x
 ```

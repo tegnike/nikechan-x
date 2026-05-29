@@ -5,7 +5,7 @@ model:
   api_mode: codex_responses
 terminal:
   backend: local
-  cwd: /Users/nikenike/.hermes/profiles/nikechan-x/workspace
+  cwd: /profile/workspace
   timeout: 180
   docker_mount_cwd_to_workspace: false
   lifetime_seconds: 300
