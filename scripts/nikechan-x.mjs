@@ -1110,28 +1110,27 @@ async function sendPendingThread(channel, pending, content, options = {}) {
       threadName: pending.threadName || null,
     };
   }
-  const seed = await sendDiscordMessage(channel, content);
   const title = sanitizeDiscordThreadName(
     options.threadTitle || `X候補 ${jstDate()} ${pending.id.slice(0, 8)}`,
   );
-  const thread = await createDiscordThread(channel, seed.id, title);
+  const thread = await createDiscordThread(channel, title);
   if (thread.id) {
     await addConfiguredDiscordThreadMembers(thread.id);
   }
+  const message = await sendDiscordMessage(thread.id, content);
   return {
     ...thread,
-    messageId: seed.id || null,
+    messageId: message.id || null,
     threadId: thread.id || null,
     threadName: thread.name || title,
   };
 }
 
-async function createDiscordThread(channel, messageId, name) {
+async function createDiscordThread(channel, name) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) throw new Error('missing DISCORD_BOT_TOKEN');
-  if (!messageId) throw new Error('cannot create Discord thread without seed message id');
   const response = await fetch(
-    `https://discord.com/api/v10/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageId)}/threads`,
+    `https://discord.com/api/v10/channels/${encodeURIComponent(channel)}/threads`,
     {
       method: 'POST',
       headers: {
@@ -1140,6 +1139,7 @@ async function createDiscordThread(channel, messageId, name) {
       },
       body: JSON.stringify({
         name,
+        type: 11,
         auto_archive_duration: 1440,
       }),
     },
