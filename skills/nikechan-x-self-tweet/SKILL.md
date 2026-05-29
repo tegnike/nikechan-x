@@ -13,6 +13,7 @@ Hermes本体は変更しない。このprofile内のCLIを使う。
 node scripts/nikechan-x.mjs context --source-mode auto
 node scripts/nikechan-x.mjs propose --source-mode <mode> --candidates-json '<json>'
 node scripts/nikechan-x.mjs notify-pending
+node scripts/nikechan-x.mjs resolve --text "<Discord返信本文>" --notify
 node scripts/nikechan-x.mjs pending
 node scripts/nikechan-x.mjs approve --ids <番号>
 node scripts/nikechan-x.mjs cancel --reason "<理由>"
@@ -27,7 +28,8 @@ node scripts/nikechan-x.mjs cancel --reason "<理由>"
 - 候補生成前に必ず `context` を読む
 - 候補生成後は必ず `propose` に渡し、guardとpending保存を通す
 - `propose` 後は `notify-pending` を実行し、Discordの承認チャンネルへ候補全文を提示する
-- マスターが番号で承認した場合だけ `approve` を実行する
+- マスターが番号で承認・修正・見送りを返信した場合は、本文を `resolve --text` に渡して判定と記録をCLIに任せる
+- `resolve` が `revise` を返した場合だけ、feedbackを反映した新しい候補を作り直して `propose` する
 - 修正指示の場合は、既存pendingを参考に新しい候補を作り直して `propose` する
 
 ## 候補JSON
@@ -49,7 +51,7 @@ node scripts/nikechan-x.mjs cancel --reason "<理由>"
 マスターが「1で」「1番」「投稿して」「OK」など明確に承認した場合だけ:
 
 ```bash
-node scripts/nikechan-x.mjs approve --ids 1
+node scripts/nikechan-x.mjs resolve --text "1で" --notify
 ```
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` ならX APIは呼ばず、記録だけ行う。

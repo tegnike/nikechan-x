@@ -81,6 +81,40 @@ export function nextSourceMode(previous) {
   return SOURCE_MODES[(index + 1) % SOURCE_MODES.length];
 }
 
+export function parseApprovalReply(text, candidateIds = []) {
+  const normalized = String(text || '').trim();
+  const ids = candidateIds.map(String);
+  if (!normalized) return { action: 'unknown', reason: 'empty reply' };
+
+  if (/見送り|却下|キャンセル|cancel|skip|スキップ|やめ|なし|不要/u.test(normalized)) {
+    return { action: 'cancel', reason: normalized };
+  }
+  if (/修正|直して|変更|作り直|再生成|別案|rewrite|revise|もう一度/u.test(normalized)) {
+    return { action: 'revise', feedback: normalized };
+  }
+
+  if (/全部|すべて|全て|all/u.test(normalized)) {
+    return { action: 'approve', ids };
+  }
+
+  const selected = new Set();
+  const idPattern = /(?:^|[^\d])([1-9])(?:\s*(?:番|つ目|で|に|を|と|,|、|\/|$))/gu;
+  for (const match of normalized.matchAll(idPattern)) {
+    const id = match[1];
+    if (ids.includes(id)) selected.add(id);
+  }
+  if (selected.size > 0) {
+    return { action: 'approve', ids: [...selected] };
+  }
+
+  if (/ok|OK|承認|投稿して|ツイートして|post/u.test(normalized)) {
+    if (ids.length === 1) return { action: 'approve', ids };
+    return { action: 'needs_id', reason: 'multiple candidates need explicit ids' };
+  }
+
+  return { action: 'unknown', reason: 'no approval intent detected' };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args.shift();
@@ -100,6 +134,9 @@ async function main() {
         break;
       case 'notify-pending':
         await commandNotifyPending(readOptions(args));
+        break;
+      case 'resolve':
+        await commandResolve(readOptions(args));
         break;
       case 'approve':
         await commandApprove(readOptions(args));
@@ -138,6 +175,7 @@ Commands:
   propose --candidates-json '[{"text":"...","reason":"..."}]' [--source-mode presence]
   pending
   notify-pending [--channel <discord_channel_id>]
+  resolve --text <discord reply> [--notify]
   approve --ids 1,2
   cancel [--reason "..."]
   post --action tweet|reply|quote|retweet --text "..." [--tweet-id id] [--source manual]
@@ -266,6 +304,71 @@ async function commandNotifyPending(options) {
     message_id: result.id || null,
   });
   printJsonOrMarkdown({ ok: true, channel, messageId: result.id || null }, options);
+}
+
+async function commandResolve(options) {
+  const pending = await readPending();
+  if (!pending) throw new Error('no pending self-tweet');
+  const text = required(options.text, '--text');
+  const decision = parseApprovalReply(text, pending.candidates.map((candidate) => candidate.id));
+  const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
+  const shouldNotify = options.notify === true || options.notify === 'true';
+
+  if (decision.action === 'approve') {
+    await commandApprove({ ids: decision.ids.join(',') });
+    if (shouldNotify && channel) {
+      await sendDiscordMessage(channel, `承認を受け付けました: ${decision.ids.join(', ')}`);
+    }
+    return;
+  }
+
+  if (decision.action === 'cancel') {
+    await commandCancel({ reason: decision.reason });
+    if (shouldNotify && channel) {
+      await sendDiscordMessage(channel, `見送りとして記録しました: ${truncate(decision.reason, 200)}`);
+    }
+    return;
+  }
+
+  if (decision.action === 'revise') {
+    const at = new Date().toISOString();
+    await recordActivity('feedback', { pendingId: pending.id, feedback: decision.feedback });
+    await updateRunState({
+      lastFeedbackAt: at,
+      lastFeedbackPendingId: pending.id,
+      lastFeedbackText: decision.feedback,
+    });
+    await recordTwitterRunState('self_tweet_last_feedback', {
+      at,
+      pending_id: pending.id,
+      feedback: decision.feedback,
+    });
+    const result = {
+      ok: true,
+      action: 'revise',
+      pendingId: pending.id,
+      feedback: decision.feedback,
+      instruction: 'Generate revised candidates and call propose again with --feedback.',
+    };
+    if (shouldNotify && channel) {
+      await sendDiscordMessage(channel, `修正依頼を記録しました。候補を作り直します: ${truncate(decision.feedback, 200)}`);
+    }
+    printJsonOrMarkdown(result, options);
+    return;
+  }
+
+  const result = {
+    ok: false,
+    action: decision.action,
+    reason: decision.reason,
+    pendingId: pending.id,
+    instruction: 'Reply with a candidate number, a revise request, or a skip/cancel instruction.',
+  };
+  if (shouldNotify && channel) {
+    await sendDiscordMessage(channel, '承認内容を判定できませんでした。候補番号、修正指示、または見送りを送ってください。');
+  }
+  printJsonOrMarkdown(result, options);
+  if (options.strict !== 'false') process.exitCode = 2;
 }
 
 async function commandApprove(options) {
