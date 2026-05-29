@@ -55,7 +55,8 @@ test('context materials are partitioned by source mode', () => {
   const sources = {
     recentTweets: {
       data: [
-        { content: 'Claude Codeのプロンプトキャッシュ記事を読みました。', url: 'https://zenn.dev/example', action_type: 'tweet' },
+        { content: 'Claude Codeのプロンプトキャッシュ記事を読みました。 https://zenn.dev/example', url: 'https://x.com/ai_nikechan/status/1', action_type: 'tweet' },
+        { content: 'だーちゃん、AIタグの説明です。', url: 'https://x.com/ai_nikechan/status/2', action_type: 'reply' },
         { content: '#ぷにけ の話題で呼んでもらいました。', url: '', action_type: 'reply' },
         { content: '小松菜とキノコで体調を整えました。', url: '', action_type: 'reply' },
       ],
@@ -73,7 +74,8 @@ test('context materials are partitioned by source mode', () => {
   assert.match(presence.primary.map((item) => item.text).join('\n'), /ぷにけ/u);
   assert.doesNotMatch(presence.primary.map((item) => item.text).join('\n'), /小松菜/u);
   assert.match(daily.primary.map((item) => item.text).join('\n'), /小松菜/u);
-  assert.match(news.primary.map((item) => item.url).join('\n'), /https:\/\/zenn/u);
+  assert.match(news.primary.map((item) => item.text).join('\n'), /https:\/\/zenn/u);
+  assert.doesNotMatch(news.primary.map((item) => item.text).join('\n'), /AIタグの説明/u);
 });
 
 test('duplicate reference exposes recent outputs without separate manual list', () => {

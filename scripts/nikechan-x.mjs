@@ -284,9 +284,9 @@ export function buildContextMaterials(sourceMode, sources) {
   }));
 
   const technical = (item) => /AI|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術/u.test(materialText(item));
-  const daily = (item) => /小松菜|キノコ|天気|朝|昼|夜|今日|散歩|食|眠|体調|日常|生活|服|衣装/u.test(materialText(item));
-  const presence = (item) => /タグ|#|名前|呼|返信|リプ|メンション|見つけ|反応|RT|創作|ぷにけ/u.test(materialText(item));
-  const hasUrl = (item) => Boolean(item.url) || /https?:\/\//u.test(materialText(item));
+  const daily = (item) => !isOperationalMaterial(item) && /小松菜|キノコ|天気|朝|昼|夜|散歩|食|眠|体調|日常|生活|服|衣装|呉服|季節|ごはん/u.test(materialText(item));
+  const presence = (item) => !isOperationalMaterial(item) && /タグ|#|名前|呼|リプ|メンション|見つけ|反応|RT|創作|ぷにけ/u.test(materialText(item));
+  const hasContentUrl = (item) => /https?:\/\//u.test(itemBodyText(item));
 
   const pools = {
     presence: {
@@ -300,12 +300,12 @@ export function buildContextMaterials(sourceMode, sources) {
       angle: '公開してよい日常・体調・季節・軽い近況。',
     },
     tech: {
-      primary: [...tweetMaterials, ...wikiMaterials, ...noteMaterials, ...episodeMaterials].filter((item) => technical(item) && !hasUrl(item)),
+      primary: [...tweetMaterials, ...wikiMaterials, ...noteMaterials, ...episodeMaterials].filter((item) => technical(item) && !hasContentUrl(item)),
       supporting: [...tweetMaterials, ...wikiMaterials, ...topicPreviews].filter(technical),
       angle: 'AIキャラ、音声、記憶、開発、技術的な気づき。',
     },
     news: {
-      primary: [...tweetMaterials, ...topicPreviews].filter((item) => technical(item) && hasUrl(item)),
+      primary: [...tweetMaterials, ...topicPreviews].filter((item) => technical(item) && hasContentUrl(item)),
       supporting: [...wikiMaterials, ...noteMaterials].filter(technical),
       angle: 'URL付きの公開ニュース・記事への短い反応。',
     },
@@ -1070,6 +1070,19 @@ function materialText(item) {
     .map(textOf)
     .filter(Boolean)
     .join('\n');
+}
+
+function itemBodyText(item) {
+  return [item.text, item.title]
+    .map(textOf)
+    .filter(Boolean)
+    .join('\n');
+}
+
+function isOperationalMaterial(item) {
+  return item.type === 'episode'
+    && item.source === 'coding-agent'
+    && /nikechan-x|Hermes|Discord|CLI|VPS|cron|resolve|dry-run|context|実装|検証|テスト|commit|push|gateway/u.test(materialText(item));
 }
 
 function uniqueMaterials(items) {
