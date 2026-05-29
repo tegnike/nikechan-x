@@ -63,12 +63,13 @@ test('context materials are partitioned by source mode', () => {
     },
     runStateRows: { data: [] },
     publicEpisodes: { data: [] },
-    publicNotes: { data: [] },
+    publicNotes: { data: [{ title: 'Hermesの記憶', content: '記憶とプロンプトの設計を整理しました。' }] },
     publicWiki: { data: [] },
   };
 
   const presence = buildContextMaterials('presence', sources);
   const daily = buildContextMaterials('daily_life', sources);
+  const tech = buildContextMaterials('tech', sources);
   const news = buildContextMaterials('news', sources);
 
   assert.match(presence.primary.map((item) => item.text).join('\n'), /ぷにけ/u);
@@ -76,6 +77,8 @@ test('context materials are partitioned by source mode', () => {
   assert.match(daily.primary.map((item) => item.text).join('\n'), /小松菜/u);
   assert.match(news.primary.map((item) => item.text).join('\n'), /https:\/\/zenn/u);
   assert.doesNotMatch(news.primary.map((item) => item.text).join('\n'), /AIタグの説明/u);
+  assert.match(tech.primary.map((item) => `${item.title || ''}\n${item.text || ''}`).join('\n'), /Hermes/u);
+  assert.doesNotMatch(tech.primary.map((item) => item.text).join('\n'), /AIタグの説明/u);
 });
 
 test('duplicate reference exposes recent outputs without separate manual list', () => {

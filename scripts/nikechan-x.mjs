@@ -283,7 +283,7 @@ export function buildContextMaterials(sourceMode, sources) {
     updatedAt: row.updated_at || '',
   }));
 
-  const technical = (item) => /AI|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術/u.test(materialText(item));
+  const technical = (item) => /AI(?!ニケちゃん)|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術/u.test(materialText(item));
   const daily = (item) => !isOperationalMaterial(item) && /小松菜|キノコ|天気|朝|昼|夜|散歩|食|眠|体調|日常|生活|服|衣装|呉服|季節|ごはん/u.test(materialText(item));
   const presence = (item) => !isOperationalMaterial(item) && /タグ|#|名前|呼|リプ|メンション|見つけ|反応|RT|創作|ぷにけ/u.test(materialText(item));
   const hasContentUrl = (item) => /https?:\/\//u.test(itemBodyText(item));
@@ -300,7 +300,7 @@ export function buildContextMaterials(sourceMode, sources) {
       angle: '公開してよい日常・体調・季節・軽い近況。',
     },
     tech: {
-      primary: [...tweetMaterials, ...wikiMaterials, ...noteMaterials, ...episodeMaterials].filter((item) => technical(item) && !hasContentUrl(item)),
+      primary: [...tweetMaterials, ...wikiMaterials, ...noteMaterials, ...episodeMaterials].filter((item) => technical(item) && !presence(item) && !daily(item) && !hasContentUrl(item)),
       supporting: [...tweetMaterials, ...wikiMaterials, ...topicPreviews].filter(technical),
       angle: 'AIキャラ、音声、記憶、開発、技術的な気づき。',
     },
