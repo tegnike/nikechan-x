@@ -4,7 +4,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { guardText, nextSourceMode, parseApprovalReply, validateReleaseModeChange } from '../scripts/nikechan-x.mjs';
+import {
+  buildContextMaterials,
+  buildDuplicateReference,
+  guardText,
+  nextSourceMode,
+  parseApprovalReply,
+  validateReleaseModeChange,
+} from '../scripts/nikechan-x.mjs';
 
 test('guard accepts ordinary Japanese tweet', () => {
   const result = guardText('今日は少しだけキャッシュがあたたかいです。返事の温度を覚えておきます。');
@@ -42,6 +49,47 @@ test('release mode changes require explicit live confirmation', () => {
   assert.equal(validateReleaseModeChange('canary-live').ok, false);
   assert.equal(validateReleaseModeChange('live').ok, false);
   assert.deepEqual(validateReleaseModeChange('live', 'LIVE_X_POSTING'), { ok: true, mode: 'live', liveArmed: true });
+});
+
+test('context materials are partitioned by source mode', () => {
+  const sources = {
+    recentTweets: {
+      data: [
+        { content: 'Claude Codeのプロンプトキャッシュ記事を読みました。', url: 'https://zenn.dev/example', action_type: 'tweet' },
+        { content: '#ぷにけ の話題で呼んでもらいました。', url: '', action_type: 'reply' },
+        { content: '小松菜とキノコで体調を整えました。', url: '', action_type: 'reply' },
+      ],
+    },
+    runStateRows: { data: [] },
+    publicEpisodes: { data: [] },
+    publicNotes: { data: [] },
+    publicWiki: { data: [] },
+  };
+
+  const presence = buildContextMaterials('presence', sources);
+  const daily = buildContextMaterials('daily_life', sources);
+  const news = buildContextMaterials('news', sources);
+
+  assert.match(presence.primary.map((item) => item.text).join('\n'), /ぷにけ/u);
+  assert.doesNotMatch(presence.primary.map((item) => item.text).join('\n'), /小松菜/u);
+  assert.match(daily.primary.map((item) => item.text).join('\n'), /小松菜/u);
+  assert.match(news.primary.map((item) => item.url).join('\n'), /https:\/\/zenn/u);
+});
+
+test('duplicate reference exposes recent outputs without separate manual list', () => {
+  const result = buildDuplicateReference(
+    {
+      recentPresentedTopics: [{ text: '前回の候補です。' }],
+      lastExecutedTexts: ['投稿済みです。'],
+    },
+    {
+      recentTweets: { data: [{ content: '直近ツイートです。' }] },
+    },
+  );
+
+  assert.deepEqual(result.recentPresentedTexts, ['前回の候補です。']);
+  assert.deepEqual(result.lastExecutedTexts, ['投稿済みです。']);
+  assert.deepEqual(result.recentTweetTexts, ['直近ツイートです。']);
 });
 
 test('propose and approve dry-run store state without credentials', async () => {

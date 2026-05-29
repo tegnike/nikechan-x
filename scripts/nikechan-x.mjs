@@ -215,32 +215,140 @@ async function commandContext(options) {
   const requested = options.sourceMode || options['source-mode'] || 'auto';
   const sourceMode = requested === 'auto' ? nextSourceMode(runState.lastSourceMode) : requested;
   const [recentTweets, runStateRows, publicEpisodes, publicNotes, publicWiki] = await Promise.all([
-    supabaseGet('tweets?select=content,url,created_at,action_type&order=created_at.desc&limit=8'),
+    supabaseGet('tweets?select=content,url,created_at,action_type&order=created_at.desc&limit=20'),
     supabaseGet('twitter_run_state?select=key,value,updated_at&order=updated_at.desc&limit=12'),
-    supabaseGet('local_episodes?select=date,content,source,created_at&source=in.(twitter,coding-agent)&order=created_at.desc&limit=8'),
-    supabaseGet('local_notes?select=title,content,created_at&order=created_at.desc&limit=5'),
-    supabaseGet('knowledge_entries?select=title,summary,updated_at&order=updated_at.desc&limit=5'),
+    supabaseGet('local_episodes?select=date,content,source,created_at&source=in.(twitter,coding-agent)&order=created_at.desc&limit=20'),
+    supabaseGet('local_notes?select=title,content,created_at&order=created_at.desc&limit=10'),
+    supabaseGet('knowledge_entries?select=title,summary,updated_at&order=updated_at.desc&limit=10'),
   ]);
+  const sources = { recentTweets, runStateRows, publicEpisodes, publicNotes, publicWiki };
 
   const context = {
     sourceMode,
     sourceModes: SOURCE_MODES,
     releaseMode: releaseMode(),
-    recentLocalState: runState,
-    recentTweets,
-    runStateRows,
-    publicEpisodes,
-    publicNotes,
-    publicWiki,
+    recentLocalState: summarizeRunState(runState),
+    materials: buildContextMaterials(sourceMode, sources),
+    duplicateReference: buildDuplicateReference(runState, sources),
     guardPolicy: {
       requireApproval: true,
       defaultReleaseMode: 'dry-run',
       newsCandidatesNeedUrlWhenUsingNewsHook: true,
       noSecretsOrPrivateOperationalMarkers: true,
     },
-    instruction: 'Hermes should generate 2-3 concise candidate tweets, then call propose with candidates-json. Do not post directly before approval.',
+    instruction: [
+      'Use materials.primary first and materials.supporting only when needed.',
+      'Do not create a candidate that repeats duplicateReference.recentPresentedTexts, duplicateReference.lastExecutedTexts, or duplicateReference.recentTweetTexts.',
+      'Generate 2-3 concise candidate tweets, then call propose with candidates-json. Do not post directly before approval.',
+    ],
   };
   printJsonOrMarkdown(context, options);
+}
+
+export function buildContextMaterials(sourceMode, sources) {
+  const tweets = rows(sources.recentTweets).filter((row) => textOf(row.content) || row.url);
+  const episodes = rows(sources.publicEpisodes).filter((row) => textOf(row.content));
+  const notes = rows(sources.publicNotes).filter((row) => textOf(row.title) || textOf(row.content));
+  const wiki = rows(sources.publicWiki).filter((row) => textOf(row.title) || textOf(row.summary));
+  const runRows = rows(sources.runStateRows);
+
+  const topicPreviews = runRows
+    .flatMap((row) => extractTopicPreviews(row.value))
+    .map((item) => ({ type: 'topic', ...item }))
+    .slice(0, 8);
+  const tweetMaterials = tweets.map((row) => ({
+    type: 'tweet',
+    text: textOf(row.content),
+    url: row.url || '',
+    actionType: row.action_type || '',
+    createdAt: row.created_at || '',
+  }));
+  const episodeMaterials = episodes.map((row) => ({
+    type: 'episode',
+    text: textOf(row.content),
+    source: row.source || '',
+    date: row.date || '',
+    createdAt: row.created_at || '',
+  }));
+  const noteMaterials = notes.map((row) => ({
+    type: 'note',
+    title: textOf(row.title),
+    text: textOf(row.content),
+    createdAt: row.created_at || '',
+  }));
+  const wikiMaterials = wiki.map((row) => ({
+    type: 'knowledge',
+    title: textOf(row.title),
+    text: textOf(row.summary),
+    updatedAt: row.updated_at || '',
+  }));
+
+  const technical = (item) => /AI|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術/u.test(materialText(item));
+  const daily = (item) => /小松菜|キノコ|天気|朝|昼|夜|今日|散歩|食|眠|体調|日常|生活|服|衣装/u.test(materialText(item));
+  const presence = (item) => /タグ|#|名前|呼|返信|リプ|メンション|見つけ|反応|RT|創作|ぷにけ/u.test(materialText(item));
+  const hasUrl = (item) => Boolean(item.url) || /https?:\/\//u.test(materialText(item));
+
+  const pools = {
+    presence: {
+      primary: [...episodeMaterials, ...tweetMaterials, ...topicPreviews].filter(presence),
+      supporting: [...wikiMaterials, ...noteMaterials].filter(presence),
+      angle: 'X上で見つけてもらった存在感、名前呼び、再接触の入口。',
+    },
+    daily_life: {
+      primary: [...episodeMaterials, ...tweetMaterials, ...noteMaterials].filter(daily),
+      supporting: [...topicPreviews, ...wikiMaterials].filter(daily),
+      angle: '公開してよい日常・体調・季節・軽い近況。',
+    },
+    tech: {
+      primary: [...tweetMaterials, ...wikiMaterials, ...noteMaterials, ...episodeMaterials].filter((item) => technical(item) && !hasUrl(item)),
+      supporting: [...tweetMaterials, ...wikiMaterials, ...topicPreviews].filter(technical),
+      angle: 'AIキャラ、音声、記憶、開発、技術的な気づき。',
+    },
+    news: {
+      primary: [...tweetMaterials, ...topicPreviews].filter((item) => technical(item) && hasUrl(item)),
+      supporting: [...wikiMaterials, ...noteMaterials].filter(technical),
+      angle: 'URL付きの公開ニュース・記事への短い反応。',
+    },
+    memory: {
+      primary: [...episodeMaterials, ...wikiMaterials, ...topicPreviews],
+      supporting: [...noteMaterials, ...tweetMaterials].filter((item) => textOf(item.text || item.title)),
+      angle: '最近の記憶や活動ログを、公開可能な一言に変換する。',
+    },
+    random: {
+      primary: rotateMaterials([...episodeMaterials, ...tweetMaterials, ...wikiMaterials, ...noteMaterials, ...topicPreviews]),
+      supporting: rotateMaterials([...topicPreviews, ...tweetMaterials, ...episodeMaterials]),
+      angle: '固定カテゴリに寄せすぎず、公開可能な材料から軽く選ぶ。',
+    },
+  };
+
+  const selected = pools[sourceMode] || pools.presence;
+  const primary = selected.primary.length ? selected.primary : selected.supporting;
+  const supporting = selected.primary.length ? selected.supporting : [];
+  return {
+    sourceMode,
+    angle: selected.angle,
+    primary: uniqueMaterials(primary).slice(0, 8),
+    supporting: uniqueMaterials(supporting).slice(0, 5),
+  };
+}
+
+export function buildDuplicateReference(runState, sources) {
+  const presented = Array.isArray(runState.recentPresentedTopics)
+    ? runState.recentPresentedTopics.map((item) => textOf(item.text)).filter(Boolean)
+    : [];
+  const executed = Array.isArray(runState.lastExecutedTexts)
+    ? runState.lastExecutedTexts.map(textOf).filter(Boolean)
+    : [];
+  const tweets = rows(sources.recentTweets)
+    .map((row) => textOf(row.content))
+    .filter(Boolean)
+    .slice(0, 12);
+  return {
+    guidance: 'Treat these as recent outputs. Do not paraphrase or reuse the same topic angle.',
+    recentPresentedTexts: presented.slice(0, 8),
+    lastExecutedTexts: executed.slice(0, 5),
+    recentTweetTexts: tweets,
+  };
 }
 
 async function commandGuard(options) {
@@ -938,6 +1046,71 @@ function formatPendingMarkdown(pending) {
     lines.push('');
   }
   return lines.join('\n');
+}
+
+function summarizeRunState(runState) {
+  return {
+    lastSourceMode: runState.lastSourceMode || null,
+    lastPresentedAt: runState.lastPresentedAt || null,
+    lastExecuteAt: runState.lastExecuteAt || null,
+    lastNotifyAt: runState.lastNotifyAt || null,
+  };
+}
+
+function rows(result) {
+  return Array.isArray(result?.data) ? result.data : [];
+}
+
+function textOf(value) {
+  return String(value || '').trim();
+}
+
+function materialText(item) {
+  return [item.text, item.title, item.url, item.actionType, item.source]
+    .map(textOf)
+    .filter(Boolean)
+    .join('\n');
+}
+
+function uniqueMaterials(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const key = materialText(item).slice(0, 180);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function rotateMaterials(items) {
+  const unique = uniqueMaterials(items);
+  if (unique.length <= 1) return unique;
+  const seed = Number(new Date().toISOString().slice(8, 10)) || 0;
+  const offset = seed % unique.length;
+  return [...unique.slice(offset), ...unique.slice(0, offset)];
+}
+
+function extractTopicPreviews(value) {
+  const payload = typeof value === 'string' ? safeJsonParse(value, null) : value;
+  const topics = Array.isArray(payload?.topics) ? payload.topics : [];
+  return topics
+    .map((topic) => ({
+      text: textOf(topic.textPreview || topic.text || topic.topic),
+      title: textOf(Array.isArray(topic.titles) ? topic.titles[0] : topic.title),
+      topic: textOf(topic.topic),
+      angle: textOf(topic.angle),
+    }))
+    .filter((topic) => topic.text || topic.title || topic.topic);
+}
+
+function safeJsonParse(text, fallback) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
 }
 
 function readOptions(args) {

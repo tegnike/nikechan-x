@@ -30,6 +30,8 @@ node scripts/nikechan-x.mjs preflight-live
 - cron実行時は最初に `state --json` を確認する。既存pendingに `threadId` がある場合は新規候補も新規threadも作らず `[SILENT]` を返す
 - 既存pendingがあり `threadId` がない場合だけ `notify-pending --thread` でthread化し、`[SILENT]` を返す
 - 候補生成前に必ず `context` を読む
+- `context.materials.primary` を主材料にする。`context.materials.supporting` は補助だけに使う
+- `context.duplicateReference` に近い話題・言い回しは作らない。禁止リスト管理ではなく、その場の重複参照として扱う
 - 候補生成後は必ず `propose` に渡し、guardとpending保存を通す
 - `propose` 後は `notify-pending --thread` を実行し、候補ごとのDiscord threadを作って候補全文を提示する
 - マスターがthread内で番号承認・修正・見送りを返信した場合は、本文を `resolve --text` に渡して判定と記録をCLIに任せる
