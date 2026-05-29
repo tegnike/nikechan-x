@@ -32,6 +32,9 @@ home/
 hooks/
 workspace/
 local/
+bin/
+channel_directory.json
+kanban.db
 __pycache__/
 *.pyc
 .DS_Store
