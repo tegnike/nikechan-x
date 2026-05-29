@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
+const X_PROFILE_DIR = resolve(ROOT, 'profiles', 'nikechan-x');
+const X_PROFILE_SOUL = resolve(X_PROFILE_DIR, 'SOUL.md');
 const STATE_DIR = process.env.NIKECHAN_X_STATE_DIR || resolve(ROOT, 'state');
 const ACCOUNT_NAME = process.env.X_ACCOUNT_NAME || 'ai_nikechan';
 const SOURCE_MODES = ['presence', 'daily_life', 'tech', 'news', 'memory', 'random'];
@@ -266,6 +268,12 @@ async function commandContext(options) {
   const sources = { recentTweets, runStateRows, publicEpisodes, publicNotes, publicWiki };
 
   const context = {
+    profile: {
+      id: 'nikechan-x',
+      root: 'profiles/nikechan-x',
+      soulPath: 'profiles/nikechan-x/SOUL.md',
+      soul: await readProfileText(X_PROFILE_SOUL),
+    },
     sourceMode,
     sourceModes: SOURCE_MODES,
     releaseMode: releaseMode(),
@@ -286,6 +294,14 @@ async function commandContext(options) {
     ],
   };
   printJsonOrMarkdown(context, options);
+}
+
+async function readProfileText(path) {
+  try {
+    return await readFile(path, 'utf8');
+  } catch {
+    return '';
+  }
 }
 
 function buildTweetStylePolicy() {

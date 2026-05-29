@@ -3,7 +3,7 @@
     {
       "id": "x-self-tweet-live-v1",
       "name": "x-self-tweet-live",
-      "prompt": "Xセルフツイート候補を作成し、profile内CLIでguard/pending保存を通してから、候補ごとのDiscord threadへ提示してください。通知はCLIの notify-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX投稿は実行しません。",
+      "prompt": "profiles/nikechan-x のX profileでセルフツイート候補を作成し、profile内CLIでguard/pending保存を通してから、候補ごとのDiscord threadへ提示してください。通知はCLIの notify-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX投稿は実行しません。",
       "skills": ["x-self-tweet"],
       "skill": "x-self-tweet",
       "model": null,
@@ -46,7 +46,7 @@
     {
       "id": "x-mention-reaction-live-v1",
       "name": "x-mention-reaction-live",
-      "prompt": "Xメンション反応候補を作成し、profile内CLIでguard/pending保存を通してからDiscord threadへ提示してください。通知はCLIの notify-mention-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX返信・引用RTは実行しません。",
+      "prompt": "profiles/nikechan-x のX profileでメンション反応候補を作成し、profile内CLIでguard/pending保存を通してからDiscord threadへ提示してください。通知はCLIの notify-mention-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX返信・引用RTは実行しません。",
       "skills": ["x-mention-reaction"],
       "skill": "x-mention-reaction",
       "model": null,
@@ -88,7 +88,7 @@
     {
       "id": "x-hashtag-reaction-live-v1",
       "name": "x-hashtag-reaction-live",
-      "prompt": "Xハッシュタグ反応を実行してください。profile内CLIで未チェック#AIニケちゃん候補を読み、RT/skipを判断し、hashtag-execute --notify を通して結果をDiscordへ報告してください。CLI通知に任せ、最終応答は [SILENT] にしてください。",
+      "prompt": "profiles/nikechan-x のX profileでハッシュタグ反応を実行してください。profile内CLIで未チェック#AIニケちゃん候補を読み、RT/skipを判断し、hashtag-execute --notify を通して結果をDiscordへ報告してください。CLI通知に任せ、最終応答は [SILENT] にしてください。",
       "skills": ["x-hashtag-reaction"],
       "skill": "x-hashtag-reaction",
       "model": null,
