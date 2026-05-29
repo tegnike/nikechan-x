@@ -1,12 +1,12 @@
 [Unit]
-Description=Hermes Agent Gateway (nikechan-x)
+Description=Hermes Agent Gateway (nikechan-hermes)
 After=docker.service network-online.target
 Requires=docker.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/nikechan-x
+WorkingDirectory=/opt/nikechan-hermes
 ExecStart=/usr/bin/docker compose up
 ExecStop=/usr/bin/docker compose down
 Restart=always

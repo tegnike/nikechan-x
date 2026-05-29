@@ -22,7 +22,10 @@ discord:
   auto_thread: true
   thread_require_mention: false
   free_response_channels:
+    - "1477766217673478234"
     - "1509865603714908304"
+    - "1483150821372854442"
+    - "1493132651958112319"
 tool_loop_guardrails:
   warnings_enabled: true
   hard_stop_enabled: true

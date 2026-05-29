@@ -1,23 +1,23 @@
 ---
-name: nikechan-x-self-tweet
+name: x-self-tweet
 description: AIニケちゃんのXセルフツイート候補を作る。マスター専用Discordで承認を受ける前提で、public-safeな話題だけを短いX投稿案にする。
 ---
 
-# nikechan-x-self-tweet
+# x-self-tweet
 
 ## 使うCLI
 
 Hermes本体は変更しない。Hermesのscheduler/session/Discord受信を優先し、X投稿境界だけprofile内CLIを使う。
 
 ```bash
-node scripts/nikechan-x.mjs context --source-mode auto
-node scripts/nikechan-x.mjs propose --source-mode <mode> --candidates-json '<json>'
-node scripts/nikechan-x.mjs notify-pending --thread
-node scripts/nikechan-x.mjs resolve --text "<Discord返信本文>" --notify
-node scripts/nikechan-x.mjs pending
-node scripts/nikechan-x.mjs approve --ids <番号>
-node scripts/nikechan-x.mjs cancel --reason "<理由>"
-node scripts/nikechan-x.mjs preflight-live
+node scripts/nikechan-hermes.mjs context --source-mode auto
+node scripts/nikechan-hermes.mjs propose --source-mode <mode> --candidates-json '<json>'
+node scripts/nikechan-hermes.mjs notify-pending --thread
+node scripts/nikechan-hermes.mjs resolve --text "<Discord返信本文>" --notify
+node scripts/nikechan-hermes.mjs pending
+node scripts/nikechan-hermes.mjs approve --ids <番号>
+node scripts/nikechan-hermes.mjs cancel --reason "<理由>"
+node scripts/nikechan-hermes.mjs preflight-live
 ```
 
 ## 方針
@@ -80,7 +80,7 @@ node scripts/nikechan-x.mjs preflight-live
 マスターが「1で」「1番」「投稿して」「OK」など明確に承認した場合だけ:
 
 ```bash
-node scripts/nikechan-x.mjs resolve --text "1で" --notify
+node scripts/nikechan-hermes.mjs resolve --text "1で" --notify
 ```
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` ならX APIは呼ばず、記録だけ行う。
@@ -90,5 +90,5 @@ liveへ切り替える前は `preflight-live` で疎通、pending、guardを確�
 ## 見送り時
 
 ```bash
-node scripts/nikechan-x.mjs cancel --reason "マスターが見送り"
+node scripts/nikechan-hermes.mjs cancel --reason "マスターが見送り"
 ```

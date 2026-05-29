@@ -2,7 +2,7 @@
 set -euo pipefail
 
 profile_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-service_name="ai.hermes.gateway-nikechan-x.service"
+service_name="ai.hermes.gateway-nikechan-hermes.service"
 service_src="$profile_dir/systemd/$service_name"
 service_dst="/etc/systemd/system/$service_name"
 

@@ -48,7 +48,7 @@ export function guardText(text, options = {}) {
     'Docker',
     'VPS',
     'xangi',
-    'nikechan-x',
+    'nikechan-hermes',
     'worker',
     'gateway',
     '/opt/',
@@ -225,7 +225,7 @@ async function main() {
 }
 
 function printHelp() {
-  console.log(`nikechan-x CLI
+  console.log(`nikechan-hermes CLI
 
 Commands:
   context [--source-mode auto|presence|daily_life|tech|news|memory|random]
@@ -1895,7 +1895,7 @@ async function recordActivity(stage, parsed, workflow = 'self-tweet', status) {
     raw_content: JSON.stringify(parsed).slice(0, 3000),
     parsed,
     status: status || (stage === 'error' ? 'failed' : stage === 'execute' ? 'success' : 'needs_approval'),
-    created_by: 'nikechan-x-hermes',
+    created_by: 'nikechan-hermes',
   });
 }
 
@@ -2081,7 +2081,7 @@ function itemBodyText(item) {
 function isOperationalMaterial(item) {
   return item.type === 'episode'
     && item.source === 'coding-agent'
-    && /nikechan-x|Hermes|Discord|CLI|VPS|cron|resolve|dry-run|context|実装|検証|テスト|commit|push|gateway/u.test(materialText(item));
+    && /nikechan-hermes|Hermes|Discord|CLI|VPS|cron|resolve|dry-run|context|実装|検証|テスト|commit|push|gateway/u.test(materialText(item));
 }
 
 function uniqueMaterials(items) {

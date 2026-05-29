@@ -1,17 +1,17 @@
 ---
-name: nikechan-x-hashtag-reaction
+name: x-hashtag-reaction
 description: #AIニケちゃん タグの未チェックツイートを収集し、RTまたはスキップを自律判断して事後報告する。
 ---
 
-# nikechan-x-hashtag-reaction
+# x-hashtag-reaction
 
 ## 使うCLI
 
 HermesはRT/skip判断を担当し、X投稿境界・guard・記録はprofile内CLIに任せる。
 
 ```bash
-node scripts/nikechan-x.mjs hashtag-context
-node scripts/nikechan-x.mjs hashtag-execute --items-json '<json>' --notify
+node scripts/nikechan-hermes.mjs hashtag-context
+node scripts/nikechan-hermes.mjs hashtag-execute --items-json '<json>' --notify
 ```
 
 ## 方針

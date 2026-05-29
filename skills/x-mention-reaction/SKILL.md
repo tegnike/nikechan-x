@@ -1,22 +1,22 @@
 ---
-name: nikechan-x-mention-reaction
+name: x-mention-reaction
 description: Xの未チェックreply/quote/@メンションを収集し、返信・引用RT・スキップ候補を作ってマスター承認に回す。
 ---
 
-# nikechan-x-mention-reaction
+# x-mention-reaction
 
 ## 使うCLI
 
 Hermesは判断と文章生成を担当し、X投稿境界・pending state・guard・記録はprofile内CLIに任せる。
 
 ```bash
-node scripts/nikechan-x.mjs mention-context
-node scripts/nikechan-x.mjs mention-propose --items-json '<json>'
-node scripts/nikechan-x.mjs notify-mention-pending --thread
-node scripts/nikechan-x.mjs mention-resolve --text "<Discord返信本文>" --notify
-node scripts/nikechan-x.mjs mention-pending
-node scripts/nikechan-x.mjs mention-approve --ids m1,m2
-node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
+node scripts/nikechan-hermes.mjs mention-context
+node scripts/nikechan-hermes.mjs mention-propose --items-json '<json>'
+node scripts/nikechan-hermes.mjs notify-mention-pending --thread
+node scripts/nikechan-hermes.mjs mention-resolve --text "<Discord返信本文>" --notify
+node scripts/nikechan-hermes.mjs mention-pending
+node scripts/nikechan-hermes.mjs mention-approve --ids m1,m2
+node scripts/nikechan-hermes.mjs mention-cancel --reason "<理由>"
 ```
 
 ## 方針
@@ -64,7 +64,7 @@ node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
 マスターが「全部OK」「1だけ」「m1で」「リプして」など明確に承認した場合だけ:
 
 ```bash
-node scripts/nikechan-x.mjs mention-resolve --text "全部OK" --notify
+node scripts/nikechan-hermes.mjs mention-resolve --text "全部OK" --notify
 ```
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` ではX API投稿も `tweet_logs` 消費も行わない。

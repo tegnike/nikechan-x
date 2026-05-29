@@ -1,9 +1,11 @@
 {
-  "name": "nikechan-x",
+  "name": "nikechan-hermes",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "another-world:health": "node scripts/nikechan-another-world.mjs health",
+    "another-world:self-test": "node scripts/nikechan-another-world.mjs self-test",
     "test": "node --test"
   }
 }

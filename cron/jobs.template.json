@@ -1,13 +1,11 @@
 {
   "jobs": [
     {
-      "id": "nikechan-x-self-tweet-live-v1",
-      "name": "nikechan-x-self-tweet-live",
+      "id": "x-self-tweet-live-v1",
+      "name": "x-self-tweet-live",
       "prompt": "Xセルフツイート候補を作成し、profile内CLIでguard/pending保存を通してから、候補ごとのDiscord threadへ提示してください。通知はCLIの notify-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX投稿は実行しません。",
-      "skills": [
-        "nikechan-x-self-tweet"
-      ],
-      "skill": "nikechan-x-self-tweet",
+      "skills": ["x-self-tweet"],
+      "skill": "x-self-tweet",
       "model": null,
       "provider": null,
       "base_url": null,
@@ -17,10 +15,10 @@
       "schedule": {
         "kind": "cron",
         "expr": "5 8,12,18,22 * * *",
-        "timezone": "Asia/Tokyo",
-        "display": "JST 08:05, 12:05, 18:05, 22:05"
+        "timezone": "Europe/Warsaw",
+        "display": "Europe/Warsaw 08:05, 12:05, 18:05, 22:05"
       },
-      "schedule_display": "JST 08:05, 12:05, 18:05, 22:05",
+      "schedule_display": "Europe/Warsaw 08:05, 12:05, 18:05, 22:05",
       "repeat": {
         "times": null,
         "completed": 0
@@ -39,24 +37,18 @@
       "origin": {
         "platform": "discord",
         "chat_id": "1477766217673478234",
-        "chat_name": "nikechan-x",
+        "chat_name": "x",
         "thread_id": null
       },
-      "enabled_toolsets": [
-        "terminal",
-        "web"
-      ],
-      "workdir": "/profile",
-      "profile": "nikechan-x"
+      "enabled_toolsets": ["terminal", "web"],
+      "workdir": "/profile"
     },
     {
-      "id": "nikechan-x-mention-reaction-live-v1",
-      "name": "nikechan-x-mention-reaction-live",
+      "id": "x-mention-reaction-live-v1",
+      "name": "x-mention-reaction-live",
       "prompt": "Xメンション反応候補を作成し、profile内CLIでguard/pending保存を通してからDiscord threadへ提示してください。通知はCLIの notify-mention-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX返信・引用RTは実行しません。",
-      "skills": [
-        "nikechan-x-mention-reaction"
-      ],
-      "skill": "nikechan-x-mention-reaction",
+      "skills": ["x-mention-reaction"],
+      "skill": "x-mention-reaction",
       "model": null,
       "provider": null,
       "base_url": null,
@@ -66,10 +58,10 @@
       "schedule": {
         "kind": "cron",
         "expr": "10 9,13,19,23 * * *",
-        "timezone": "Asia/Tokyo",
-        "display": "JST 09:10, 13:10, 19:10, 23:10"
+        "timezone": "Europe/Warsaw",
+        "display": "Europe/Warsaw 09:10, 13:10, 19:10, 23:10"
       },
-      "schedule_display": "JST 09:10, 13:10, 19:10, 23:10",
+      "schedule_display": "Europe/Warsaw 09:10, 13:10, 19:10, 23:10",
       "repeat": {
         "times": null,
         "completed": 0
@@ -90,21 +82,15 @@
         "chat_id": "1477766217673478234",
         "thread_id": null
       },
-      "enabled_toolsets": [
-        "terminal",
-        "web"
-      ],
-      "workdir": "/profile",
-      "profile": "nikechan-x"
+      "enabled_toolsets": ["terminal", "web"],
+      "workdir": "/profile"
     },
     {
-      "id": "nikechan-x-hashtag-reaction-live-v1",
-      "name": "nikechan-x-hashtag-reaction-live",
+      "id": "x-hashtag-reaction-live-v1",
+      "name": "x-hashtag-reaction-live",
       "prompt": "Xハッシュタグ反応を実行してください。profile内CLIで未チェック#AIニケちゃん候補を読み、RT/skipを判断し、hashtag-execute --notify を通して結果をDiscordへ報告してください。CLI通知に任せ、最終応答は [SILENT] にしてください。",
-      "skills": [
-        "nikechan-x-hashtag-reaction"
-      ],
-      "skill": "nikechan-x-hashtag-reaction",
+      "skills": ["x-hashtag-reaction"],
+      "skill": "x-hashtag-reaction",
       "model": null,
       "provider": null,
       "base_url": null,
@@ -114,10 +100,10 @@
       "schedule": {
         "kind": "cron",
         "expr": "30 9,13,19,23 * * *",
-        "timezone": "Asia/Tokyo",
-        "display": "JST 09:30, 13:30, 19:30, 23:30"
+        "timezone": "Europe/Warsaw",
+        "display": "Europe/Warsaw 09:30, 13:30, 19:30, 23:30"
       },
-      "schedule_display": "JST 09:30, 13:30, 19:30, 23:30",
+      "schedule_display": "Europe/Warsaw 09:30, 13:30, 19:30, 23:30",
       "repeat": {
         "times": null,
         "completed": 0
@@ -138,12 +124,51 @@
         "chat_id": "1477766217673478234",
         "thread_id": null
       },
-      "enabled_toolsets": [
-        "terminal",
-        "web"
-      ],
-      "workdir": "/profile",
-      "profile": "nikechan-x"
+      "enabled_toolsets": ["terminal", "web"],
+      "workdir": "/profile"
+    },
+    {
+      "id": "nikechan-another-world-elyth-live-v1",
+      "name": "nikechan-another-world-elyth-live",
+      "prompt": "Another World profileでELYTH巡回を実行してください。まず `node scripts/nikechan-another-world.mjs elyth-context --json` でELYTH文脈を取得し、`elyth-cycle` skillに従って最大3件の行動を判断し、`node scripts/nikechan-another-world.mjs run --json ...` を `mode: \"live\"` で呼び、guard/audit済みWorkflowReportを生成してください。guardが通った場合のみ投稿・返信・いいね・フォローを実行し、結果をDiscordへ簡潔に報告してください。",
+      "skills": ["nikechan-another-world", "elyth-cycle", "world-safety-guard", "world-memory-curation"],
+      "skill": "elyth-cycle",
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 8,11,14,17,20,23 * * *",
+        "timezone": "Europe/Warsaw",
+        "display": "Europe/Warsaw 08:00, 11:00, 14:00, 17:00, 20:00, 23:00"
+      },
+      "schedule_display": "Europe/Warsaw 08:00, 11:00, 14:00, 17:00, 20:00, 23:00",
+      "repeat": {
+        "times": null,
+        "completed": 0
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-05-29T00:00:00+09:00",
+      "next_run_at": null,
+      "last_run_at": null,
+      "last_status": null,
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "discord:1483150821372854442",
+      "origin": {
+        "platform": "discord",
+        "chat_id": "1483150821372854442",
+        "chat_name": "elyth-activity",
+        "thread_id": null
+      },
+      "enabled_toolsets": ["terminal", "web"],
+      "workdir": "/profile"
     }
   ],
   "updated_at": null
