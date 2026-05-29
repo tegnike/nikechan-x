@@ -24,6 +24,17 @@ test('guard blocks secret-like token and private markers', () => {
   assert.match(result.errors.join('\n'), /secret-like|SUPABASE_SERVICE_ROLE_KEY/u);
 });
 
+test('guard blocks private operational runtime markers', () => {
+  const result = guardText('VPSでnikechan-x-workerを再起動しました。');
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join('\n'), /private\/operational marker/u);
+});
+
+test('guard accepts common Japanese kanji that looked like Chinese false positives', () => {
+  const result = guardText('音声と身体性の没入感を考える時、返事の間が大事になります。');
+  assert.equal(result.ok, true);
+});
+
 test('news guard requires URL for source hook', () => {
   const result = guardText('新しいAIエージェントの記事を読んで、声の間が気になりました。', { sourceMode: 'news' });
   assert.equal(result.ok, false);

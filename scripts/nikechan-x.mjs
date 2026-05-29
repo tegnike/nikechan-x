@@ -45,6 +45,13 @@ export function guardText(text, options = {}) {
     'twitter_activity_logs',
     'scheduler.jsonl',
     'docker compose logs',
+    'Docker',
+    'VPS',
+    'xangi',
+    'nikechan-x',
+    'worker',
+    'gateway',
+    '/opt/',
     '/opt/nikechan',
     '/Users/',
   ];
@@ -52,7 +59,7 @@ export function guardText(text, options = {}) {
     if (normalized.includes(marker)) errors.push(`private/operational marker: ${marker}`);
   }
 
-  const suspiciousChineseChars = /[你们这这們麼吗嗎吧让讓给給没沒过過还還从從时時]/u;
+  const suspiciousChineseChars = /[你们这這們麼吗嗎吧让讓给給还還从從]/u;
   if (suspiciousChineseChars.test(normalized)) {
     errors.push('suspicious Chinese-specific character detected');
   }
