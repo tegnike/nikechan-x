@@ -684,7 +684,13 @@ async function commandMentionResolve(options) {
   const pending = await readMentionPending();
   if (!pending) throw new Error('no pending mention-reaction');
   const text = required(options.text, '--text');
-  const decision = parseReactionApprovalReply(text, pending.items.map((item) => item.id));
+  const actionableIds = pending.items
+    .filter((item) => item.replyAction === 'reply' || item.quoteAction === 'quote')
+    .map((item) => item.id);
+  const approvalIds = actionableIds.length === 1 && hasApprovalIntent(text)
+    ? actionableIds
+    : pending.items.map((item) => item.id);
+  const decision = parseReactionApprovalReply(text, approvalIds);
   const channel = options.channel || pending.threadId || process.env.DISCORD_HOME_CHANNEL;
   const shouldNotify = options.notify === true || options.notify === 'true';
 
@@ -1524,6 +1530,10 @@ function parseReactionApprovalReply(text, itemIds = []) {
     return { action: 'needs_id', reason: 'multiple candidates need explicit ids' };
   }
   return { action: 'unknown', reason: 'no approval intent detected' };
+}
+
+function hasApprovalIntent(text) {
+  return /ok|OK|承認|投稿して|リプして|返信OK|引用して|実行して|post/u.test(String(text || ''));
 }
 
 function normalizeReactionItemId(value, prefix) {

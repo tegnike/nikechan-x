@@ -478,6 +478,89 @@ test('mention propose and approve dry-run use local pending state', async () => 
   }
 });
 
+test('mention resolve treats reply OK as the only actionable item approval', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  try {
+    await mkdir(stateDir, { recursive: true });
+    const context = {
+      candidates: [
+        {
+          id: 'm1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'kubo',
+          displayName: 'KuboAvatar',
+          type: 'reply',
+          body: '日々成長！',
+        },
+        {
+          id: 'm2',
+          tweetLogId: 'log-2',
+          postId: '2234567890',
+          username: 'tegnike',
+          displayName: 'ニケちゃん',
+          type: 'mention',
+          body: '作業報告',
+        },
+      ],
+    };
+    await writeFile(join(stateDir, 'mention-context.json'), `${JSON.stringify(context)}\n`);
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+    const items = JSON.stringify({
+      items: [
+        {
+          id: 'm1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'kubo',
+          displayName: 'KuboAvatar',
+          type: 'reply',
+          body: '日々成長！',
+          replyAction: 'reply',
+          quoteAction: 'skip',
+          replyText: 'ありがとうございます。これからも少しずつ成長します。',
+          reason: '応援への返信',
+        },
+        {
+          id: 'm2',
+          tweetLogId: 'log-2',
+          postId: '2234567890',
+          username: 'tegnike',
+          displayName: 'ニケちゃん',
+          type: 'mention',
+          body: '作業報告',
+          replyAction: 'skip',
+          quoteAction: 'skip',
+          reason: '反応不要',
+        },
+      ],
+    });
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-propose', '--items-json', items], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(proposed.status, 0, proposed.stderr);
+
+    const resolved = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-resolve', '--text', '返信OK'], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(resolved.status, 0, resolved.stderr);
+    const result = JSON.parse(await readFile(join(stateDir, 'last-mention-reaction-result.json'), 'utf8'));
+    assert.deepEqual(result.results.map((entry) => entry.itemId), ['m1']);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('hashtag execute dry-run reports retweets without credentials', async () => {
   const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
   try {

@@ -67,6 +67,9 @@ node scripts/nikechan-hermes.mjs mention-cancel --reason "<理由>"
 node scripts/nikechan-hermes.mjs mention-resolve --text "全部OK" --notify
 ```
 
+- 承認返信を受けたら、追加調査・`pwd`/`ls`・ファイル閲覧・`node -e`・`python -c`・heredoc実行は行わず、上記の `mention-resolve` だけを実行する
+- `mention-resolve` の結果が完了なら、その結果を短く報告して終了する
+
 `NIKECHAN_X_RELEASE_MODE=dry-run` ではX API投稿も `tweet_logs` 消費も行わない。
 `live` または `canary-live` かつ `NIKECHAN_X_LIVE_ARMED=yes` のときだけ、投稿・checked更新・action記録・contact episode記録を行う。
 

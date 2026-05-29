@@ -59,6 +59,11 @@ session_reset:
 group_sessions_per_user: false
 streaming:
   enabled: false
+display:
+  tool_progress: off
+  platforms:
+    discord:
+      tool_progress: off
 skills:
   creation_nudge_interval: 15
   platform_disabled:
