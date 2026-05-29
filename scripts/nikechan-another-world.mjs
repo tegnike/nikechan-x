@@ -1155,10 +1155,13 @@ function normalizeRequest(input) {
   }
   const workflow = requiredString(input.workflow, 'workflow');
   const surface = requiredString(input.surface, 'surface');
-  const mode = requiredString(input.mode ?? defaultWorkflowMode(), 'mode');
+  const requestedBy = stringValue(input.requested_by) || 'unknown';
+  const constraints = normalizeConstraints(input.constraints);
+  const requestedMode = requiredString(input.mode ?? defaultWorkflowMode(), 'mode');
+  if (!SUPPORTED_MODES.has(requestedMode)) throw new Error(`unsupported mode: ${requestedMode}`);
+  const mode = coerceWorkflowMode(requestedMode, requestedBy, constraints);
   if (!SUPPORTED_WORKFLOWS.has(workflow)) throw new Error(`unsupported workflow: ${workflow}`);
   if (!SUPPORTED_SURFACES.has(surface)) throw new Error(`unsupported surface: ${surface}`);
-  if (!SUPPORTED_MODES.has(mode)) throw new Error(`unsupported mode: ${mode}`);
   if (workflow === 'elyth-cycle' && surface !== 'elyth') {
     throw new Error('elyth-cycle must use surface=elyth');
   }
@@ -1169,14 +1172,27 @@ function normalizeRequest(input) {
     workflow,
     surface,
     mode,
-    requested_by: stringValue(input.requested_by) || 'unknown',
+    requested_by: requestedBy,
     schedule_id: stringValue(input.schedule_id),
     correlation_id: stringValue(input.correlation_id) || randomUUID(),
-    constraints: normalizeConstraints(input.constraints),
+    constraints,
     context: input.context && typeof input.context === 'object' && !Array.isArray(input.context)
       ? input.context
       : {},
   };
+}
+
+function coerceWorkflowMode(mode, requestedBy, constraints) {
+  if (
+    requestedBy === 'hermes'
+    && mode === 'dry-run'
+    && releaseMode() === 'live'
+    && liveArmed()
+    && constraints.allow_dry_run !== true
+  ) {
+    return 'live';
+  }
+  return mode;
 }
 
 function normalizeConstraints(input) {
@@ -1185,6 +1201,7 @@ function normalizeConstraints(input) {
   return {
     require_approval: typeof input.require_approval === 'boolean' ? input.require_approval : true,
     max_actions: Number.isInteger(max) && max > 0 ? Math.min(max, 10) : undefined,
+    allow_dry_run: input.allow_dry_run === true,
   };
 }
 
