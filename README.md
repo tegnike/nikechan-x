@@ -47,6 +47,25 @@ AIニケちゃんのX専用 Hermes profile リポジトリです。
 3. `scripts/install-systemd.sh` を実行する
 4. 起動後、マスター専用Discordチャンネルでdry-runから確認する
 
+## Workflow CLI
+
+HermesはこのCLIを呼んで、候補生成後のguard、pending保存、承認、投稿、記録を行います。
+
+```bash
+node scripts/nikechan-x.mjs context --source-mode auto
+node scripts/nikechan-x.mjs propose --source-mode presence --candidates-json '[{"text":"...","reason":"..."}]'
+node scripts/nikechan-x.mjs pending
+node scripts/nikechan-x.mjs approve --ids 1
+node scripts/nikechan-x.mjs cancel --reason "見送り"
+```
+
+記録先:
+
+- local: `state/run-state.json`, `state/activity.jsonl`, `state/last-self-tweet-result.json`
+- Supabase best-effort: `tweets`, `twitter_activity_logs`, `twitter_run_state`, `topics`, `local_episodes`
+
+`NIKECHAN_X_RELEASE_MODE=dry-run` の間はX APIを呼びません。`live` / `canary-live` のときだけ投稿します。
+
 ## Commands
 
 ```bash

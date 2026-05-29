@@ -5,7 +5,7 @@ model:
   api_mode: codex_responses
 terminal:
   backend: local
-  cwd: /profile/workspace
+  cwd: /profile
   timeout: 180
   docker_mount_cwd_to_workspace: false
   lifetime_seconds: 300
@@ -145,7 +145,6 @@ agent:
   verbose: false
   reasoning_effort: medium
   disabled_toolsets:
-    - terminal
     - file
     - code_execution
     - cronjob
@@ -166,4 +165,5 @@ platform_toolsets:
   cli:
     - hermes-cli
   discord:
+    - terminal
     - web

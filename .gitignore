@@ -6,6 +6,7 @@ auth.json
 *.pem
 
 # runtime state
+state/
 state.db*
 sessions/
 logs/
