@@ -54,6 +54,7 @@ HermesはこのCLIを呼んで、候補生成後のguard、pending保存、承�
 ```bash
 node scripts/nikechan-x.mjs context --source-mode auto
 node scripts/nikechan-x.mjs propose --source-mode presence --candidates-json '[{"text":"...","reason":"..."}]'
+node scripts/nikechan-x.mjs notify-pending
 node scripts/nikechan-x.mjs pending
 node scripts/nikechan-x.mjs approve --ids 1
 node scripts/nikechan-x.mjs cancel --reason "見送り"

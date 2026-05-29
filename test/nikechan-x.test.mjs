@@ -137,3 +137,48 @@ test('doctor reports missing credentials without exposing secret values', () => 
   assert.equal(parsed.checks.some((check) => check.name === 'env:X_CONSUMER_SECRET' && check.ok === false), true);
   assert.equal(result.stdout.includes('sb_secret_'), false);
 });
+
+test('notify-pending requires discord token and keeps pending intact', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
+  try {
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+      DISCORD_BOT_TOKEN: '',
+      DISCORD_HOME_CHANNEL: '1509865603714908304',
+    };
+    const candidates = JSON.stringify([
+      {
+        text: '通知テスト用の候補です。承認前なので投稿はしません。',
+        reason: 'notify test',
+      },
+    ]);
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'propose', '--candidates-json', candidates], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(proposed.status, 0, proposed.stderr);
+
+    const notified = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'notify-pending'], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.notEqual(notified.status, 0);
+    assert.match(notified.stderr, /missing DISCORD_BOT_TOKEN/u);
+
+    const pending = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'pending'], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(pending.status, 0, pending.stderr);
+    assert.match(pending.stdout, /通知テスト用の候補/u);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});

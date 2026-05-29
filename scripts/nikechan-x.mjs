@@ -98,6 +98,9 @@ async function main() {
       case 'pending':
         await commandPending(readOptions(args));
         break;
+      case 'notify-pending':
+        await commandNotifyPending(readOptions(args));
+        break;
       case 'approve':
         await commandApprove(readOptions(args));
         break;
@@ -134,6 +137,7 @@ Commands:
   guard --text <tweet> [--source-mode news]
   propose --candidates-json '[{"text":"...","reason":"..."}]' [--source-mode presence]
   pending
+  notify-pending [--channel <discord_channel_id>]
   approve --ids 1,2
   cancel [--reason "..."]
   post --action tweet|reply|quote|retweet --text "..." [--tweet-id id] [--source manual]
@@ -236,6 +240,32 @@ async function commandPending(options) {
   }
   if (options.json) printJson(pending);
   else printPendingMarkdown(pending);
+}
+
+async function commandNotifyPending(options) {
+  const pending = await readPending();
+  if (!pending) throw new Error('no pending self-tweet');
+  const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
+  if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
+  const content = [
+    'Xセルフツイート候補です。承認する番号、修正指示、または見送りを返信してください。',
+    '',
+    formatPendingMarkdown(pending),
+  ].join('\n');
+  const result = await sendDiscordMessage(channel, content);
+  await recordActivity('notify', { pendingId: pending.id, channel, messageId: result.id || null });
+  await updateRunState({
+    lastNotifyAt: new Date().toISOString(),
+    lastNotifyPendingId: pending.id,
+    lastNotifyDiscordMessageId: result.id || null,
+  });
+  await recordTwitterRunState('self_tweet_last_notify', {
+    at: new Date().toISOString(),
+    pending_id: pending.id,
+    channel,
+    message_id: result.id || null,
+  });
+  printJsonOrMarkdown({ ok: true, channel, messageId: result.id || null }, options);
 }
 
 async function commandApprove(options) {
@@ -668,19 +698,25 @@ async function supabaseUpsert(table, row, onConflict) {
 }
 
 function printPendingMarkdown(pending) {
-  console.log(`self-tweet候補 pending=${pending.id}`);
-  console.log(`sourceMode: ${pending.sourceMode}`);
-  console.log('');
+  console.log(formatPendingMarkdown(pending));
+}
+
+function formatPendingMarkdown(pending) {
+  const lines = [];
+  lines.push(`self-tweet候補 pending=${pending.id}`);
+  lines.push(`sourceMode: ${pending.sourceMode}`);
+  lines.push('');
   for (const candidate of pending.candidates) {
     const status = candidate.guard.ok ? 'OK' : `BLOCKED: ${candidate.guard.errors.join('; ')}`;
-    console.log(`${candidate.id}. ${candidate.text}`);
-    if (candidate.reason) console.log(`   狙い: ${candidate.reason}`);
-    console.log(`   guard: ${status}`);
-    if (candidate.guard.warnings.length) console.log(`   warning: ${candidate.guard.warnings.join('; ')}`);
-    console.log('');
+    lines.push(`${candidate.id}. ${candidate.text}`);
+    if (candidate.reason) lines.push(`   狙い: ${candidate.reason}`);
+    lines.push(`   guard: ${status}`);
+    if (candidate.guard.warnings.length) lines.push(`   warning: ${candidate.guard.warnings.join('; ')}`);
+    lines.push('');
   }
-  console.log('承認する場合: node scripts/nikechan-x.mjs approve --ids <番号>');
-  console.log('見送る場合: node scripts/nikechan-x.mjs cancel --reason "<理由>"');
+  lines.push('承認する場合: node scripts/nikechan-x.mjs approve --ids <番号>');
+  lines.push('見送る場合: node scripts/nikechan-x.mjs cancel --reason "<理由>"');
+  return lines.join('\n');
 }
 
 function readOptions(args) {
@@ -776,6 +812,33 @@ function tweetUrl(id) {
 function truncate(text, max) {
   const value = String(text || '');
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+async function sendDiscordMessage(channel, content) {
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) throw new Error('missing DISCORD_BOT_TOKEN');
+  const response = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(channel)}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bot ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      content: truncate(content, 1900),
+      allowed_mentions: { parse: [] },
+    }),
+  });
+  const text = await response.text();
+  let parsed = {};
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    parsed = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`Discord API failed ${response.status}: ${truncate(text, 500)}`);
+  }
+  return parsed;
 }
 
 function jstDate() {
