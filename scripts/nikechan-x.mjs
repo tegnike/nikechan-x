@@ -198,7 +198,7 @@ Commands:
   guard --text <tweet> [--source-mode news]
   propose --candidates-json '[{"text":"...","reason":"..."}]' [--source-mode presence]
   pending
-  notify-pending [--channel <discord_channel_id>]
+  notify-pending [--channel <discord_channel_id>] [--thread]
   resolve --text <discord reply> [--notify]
   approve --ids 1,2
   cancel [--reason "..."]
@@ -316,20 +316,42 @@ async function commandNotifyPending(options) {
     '',
     formatPendingMarkdown(pending),
   ].join('\n');
-  const result = await sendDiscordMessage(channel, content);
-  await recordActivity('notify', { pendingId: pending.id, channel, messageId: result.id || null });
+  const result = options.thread
+    ? await sendPendingThread(channel, pending, content, options)
+    : await sendDiscordMessage(channel, content);
+  const notifiedPending = result.threadId
+    ? await setPendingThread(pending, {
+      channel,
+      messageId: result.messageId || result.id || null,
+      threadId: result.threadId,
+      threadName: result.threadName || null,
+    })
+    : pending;
+  await recordActivity('notify', {
+    pendingId: pending.id,
+    channel,
+    messageId: result.messageId || result.id || null,
+    threadId: result.threadId || null,
+  });
   await updateRunState({
     lastNotifyAt: new Date().toISOString(),
     lastNotifyPendingId: pending.id,
-    lastNotifyDiscordMessageId: result.id || null,
+    lastNotifyDiscordMessageId: result.messageId || result.id || null,
+    lastNotifyDiscordThreadId: result.threadId || null,
   });
   await recordTwitterRunState('self_tweet_last_notify', {
     at: new Date().toISOString(),
     pending_id: pending.id,
     channel,
-    message_id: result.id || null,
+    message_id: result.messageId || result.id || null,
+    thread_id: result.threadId || null,
   });
-  printJsonOrMarkdown({ ok: true, channel, messageId: result.id || null }, options);
+  printJsonOrMarkdown({
+    ok: true,
+    channel,
+    messageId: result.messageId || result.id || null,
+    threadId: result.threadId || notifiedPending.threadId || null,
+  }, options);
 }
 
 async function commandResolve(options) {
@@ -337,7 +359,7 @@ async function commandResolve(options) {
   if (!pending) throw new Error('no pending self-tweet');
   const text = required(options.text, '--text');
   const decision = parseApprovalReply(text, pending.candidates.map((candidate) => candidate.id));
-  const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
+  const channel = options.channel || pending.threadId || process.env.DISCORD_HOME_CHANNEL;
   const shouldNotify = options.notify === true || options.notify === 'true';
 
   if (decision.action === 'approve') {
@@ -992,6 +1014,19 @@ async function readPending() {
   return readJson(statePath('pending-self-tweet.json'), null);
 }
 
+async function setPendingThread(pending, thread) {
+  const next = {
+    ...pending,
+    channel: thread.channel,
+    messageId: thread.messageId,
+    threadId: thread.threadId,
+    threadName: thread.threadName,
+    notifiedAt: new Date().toISOString(),
+  };
+  await writeJsonAtomic(statePath('pending-self-tweet.json'), next);
+  return next;
+}
+
 async function removePending() {
   const path = statePath('pending-self-tweet.json');
   if (!existsSync(path)) return;
@@ -1065,6 +1100,67 @@ async function sendDiscordMessage(channel, content) {
     throw new Error(`Discord API failed ${response.status}: ${truncate(text, 500)}`);
   }
   return parsed;
+}
+
+async function sendPendingThread(channel, pending, content, options = {}) {
+  if (pending.threadId) {
+    const message = await sendDiscordMessage(pending.threadId, content);
+    return {
+      ...message,
+      messageId: message.id || null,
+      threadId: pending.threadId,
+      threadName: pending.threadName || null,
+    };
+  }
+  const seed = await sendDiscordMessage(channel, content);
+  const title = sanitizeDiscordThreadName(
+    options.threadTitle || `X候補 ${jstDate()} ${pending.id.slice(0, 8)}`,
+  );
+  const thread = await createDiscordThread(channel, seed.id, title);
+  return {
+    ...thread,
+    messageId: seed.id || null,
+    threadId: thread.id || null,
+    threadName: thread.name || title,
+  };
+}
+
+async function createDiscordThread(channel, messageId, name) {
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) throw new Error('missing DISCORD_BOT_TOKEN');
+  if (!messageId) throw new Error('cannot create Discord thread without seed message id');
+  const response = await fetch(
+    `https://discord.com/api/v10/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(messageId)}/threads`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bot ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name,
+        auto_archive_duration: 1440,
+      }),
+    },
+  );
+  const text = await response.text();
+  let parsed = {};
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    parsed = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`Discord thread API failed ${response.status}: ${truncate(text, 500)}`);
+  }
+  return parsed;
+}
+
+function sanitizeDiscordThreadName(name) {
+  return String(name || 'X候補')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 90) || 'X候補';
 }
 
 function jstDate() {

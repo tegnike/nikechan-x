@@ -21,7 +21,9 @@
 - 初期状態では投稿はdry-runです
 - 自律投稿より、まずは候補提示と承認フローを優先します
 - マスターが明確に承認した場合だけ、設定されたrelease modeとguardに従ってX投稿を実行します
-- 候補生成、guard、pending保存、承認、投稿、記録は `node scripts/nikechan-x.mjs` を使います
+- Hermesのscheduler、Discord thread、threadごとのsession分離を優先して使います
+- 候補生成はHermesが行い、guard、pending保存、承認、投稿、記録の境界だけ `node scripts/nikechan-x.mjs` を使います
+- cronで候補提示した後は候補用threadで承認・修正・見送りを受け付けます
 - X投稿やSupabase記録に必要なsecretはこのprofileの `.env` にだけ置きます
 - このprofileはVPS上で動き、公開Discord用Hermesとは別マシン・別credentialです
 

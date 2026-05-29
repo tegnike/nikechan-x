@@ -3,7 +3,7 @@
     {
       "id": "nikechan-x-self-tweet-dry-run-v1",
       "name": "nikechan-x-self-tweet-dry-run",
-      "prompt": "Xセルフツイート候補をdry-runで作成し、マスター専用Discordチャンネルへ候補だけ提示してください。明確な承認なしにX投稿は実行しません。",
+      "prompt": "Xセルフツイート候補を作成し、profile内CLIでguard/pending保存を通してから、候補ごとのDiscord threadへ提示してください。通知はCLIの notify-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX投稿は実行しません。",
       "skills": ["nikechan-x-self-tweet"],
       "skill": "nikechan-x-self-tweet",
       "model": null,
@@ -40,8 +40,8 @@
         "chat_name": "nikechan-x",
         "thread_id": null
       },
-      "enabled_toolsets": ["web"],
-      "workdir": null,
+      "enabled_toolsets": ["terminal", "web"],
+      "workdir": "/profile",
       "profile": "nikechan-x"
     }
   ],

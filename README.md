@@ -11,7 +11,7 @@ AIニケちゃんのX専用 Hermes profile リポジトリです。
 ## 役割
 
 - X投稿、返信、引用、RT判断を担当する
-- マスター専用Discordチャンネルで候補提示、承認、修正、見送りを扱う
+- マスター専用Discordチャンネルから候補ごとのthreadを作り、承認、修正、見送りを扱う
 - X向けguard/audit、X専用memory、X API認証情報をこのprofileに閉じる
 - 既存VPSの `nikechan-x-worker` / xangi 経由実装とは独立して、Hermes profileとして最初から構成する
 
@@ -49,12 +49,12 @@ AIニケちゃんのX専用 Hermes profile リポジトリです。
 
 ## Workflow CLI
 
-HermesはこのCLIを呼んで、候補生成後のguard、pending保存、承認、投稿、記録を行います。
+Hermesはscheduler、Discord受信、thread単位sessionを担当します。このCLIはX投稿境界だけを薄く担当し、候補生成後のguard、pending保存、承認、投稿、記録を行います。
 
 ```bash
 node scripts/nikechan-x.mjs context --source-mode auto
 node scripts/nikechan-x.mjs propose --source-mode presence --candidates-json '[{"text":"...","reason":"..."}]'
-node scripts/nikechan-x.mjs notify-pending
+node scripts/nikechan-x.mjs notify-pending --thread
 node scripts/nikechan-x.mjs resolve --text "1で" --notify
 node scripts/nikechan-x.mjs pending
 node scripts/nikechan-x.mjs approve --ids 1
@@ -78,6 +78,12 @@ node scripts/nikechan-x.mjs release-mode --set live --confirm LIVE_X_POSTING
 ```
 
 `doctor` は非破壊の疎通確認です。Xは `users/me`、DiscordはBotの `users/@me`、Supabaseはreadだけを確認し、秘密値は出力しません。
+
+## Scheduler
+
+VPSではHermes gateway内蔵cronが `/opt/nikechan-x/cron/jobs.json` を読みます。self-tweetは `no_agent: false` のHermes agent jobとして動き、`nikechan-x-self-tweet` skillを読み込んでCLIのguard/pending境界を呼びます。
+
+通常テキストチャンネルへのcron配送にはHermes標準の「毎回新規thread作成」がないため、候補提示のthread作成だけ `notify-pending --thread` でDiscord APIを使います。thread内の返信処理とsession分離はHermesのDiscord adapterに戻します。
 
 ## Commands
 
