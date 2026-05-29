@@ -1101,6 +1101,7 @@ async function sendDiscordMessage(channel, content) {
 
 async function sendPendingThread(channel, pending, content, options = {}) {
   if (pending.threadId) {
+    await addConfiguredDiscordThreadMembers(pending.threadId);
     const message = await sendDiscordMessage(pending.threadId, content);
     return {
       ...message,
@@ -1114,6 +1115,9 @@ async function sendPendingThread(channel, pending, content, options = {}) {
     options.threadTitle || `X候補 ${jstDate()} ${pending.id.slice(0, 8)}`,
   );
   const thread = await createDiscordThread(channel, seed.id, title);
+  if (thread.id) {
+    await addConfiguredDiscordThreadMembers(thread.id);
+  }
   return {
     ...thread,
     messageId: seed.id || null,
@@ -1151,6 +1155,37 @@ async function createDiscordThread(channel, messageId, name) {
     throw new Error(`Discord thread API failed ${response.status}: ${truncate(text, 500)}`);
   }
   return parsed;
+}
+
+async function addConfiguredDiscordThreadMembers(threadId) {
+  const users = parseDiscordAllowedUsers();
+  for (const userId of users) {
+    await addDiscordThreadMember(threadId, userId);
+  }
+}
+
+function parseDiscordAllowedUsers() {
+  return String(process.env.DISCORD_ALLOWED_USERS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => /^\d{5,}$/u.test(item));
+}
+
+async function addDiscordThreadMember(threadId, userId) {
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) throw new Error('missing DISCORD_BOT_TOKEN');
+  const response = await fetch(
+    `https://discord.com/api/v10/channels/${encodeURIComponent(threadId)}/thread-members/${encodeURIComponent(userId)}`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bot ${token}`,
+      },
+    },
+  );
+  if (response.ok || response.status === 204) return;
+  const text = await response.text();
+  throw new Error(`Discord thread member API failed ${response.status}: ${truncate(text, 500)}`);
 }
 
 function sanitizeDiscordThreadName(name) {
