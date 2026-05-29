@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -406,6 +406,124 @@ test('resolve records revise feedback without closing pending', async () => {
     const parsed = JSON.parse(state.stdout);
     assert.equal(parsed.pending.status, 'needs_approval');
     assert.match(parsed.runState.lastFeedbackText, /修正/u);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('mention propose and approve dry-run use local pending state', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
+  try {
+    await mkdir(stateDir, { recursive: true });
+    const context = {
+      candidates: [
+        {
+          id: 'm1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'darche2',
+          displayName: 'だーしゅ',
+          nickname: 'だーしゅさん',
+          type: 'reply',
+          body: 'おかえりなさい',
+          personContext: '必ず使う呼称: だーしゅさん',
+        },
+      ],
+    };
+    await writeFile(join(stateDir, 'mention-context.json'), `${JSON.stringify(context)}\n`);
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+    const items = JSON.stringify({
+      items: [
+        {
+          id: 'm1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'darche2',
+          displayName: 'だーしゅ',
+          type: 'reply',
+          body: 'おかえりなさい',
+          replyAction: 'reply',
+          quoteAction: 'skip',
+          replyText: 'おかえりなさい、戻りました。',
+          reason: '復帰への挨拶に返す',
+        },
+      ],
+    });
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'mention-propose', '--items-json', items], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(proposed.status, 0, proposed.stderr);
+    assert.match(proposed.stdout, /ただいま戻りました/u);
+
+    const approved = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'mention-approve', '--ids', 'm1'], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(approved.status, 0, approved.stderr);
+    assert.match(approved.stdout, /返信1件/u);
+    const result = JSON.parse(await readFile(join(stateDir, 'last-mention-reaction-result.json'), 'utf8'));
+    assert.equal(result.dryRun, true);
+    assert.equal(result.results[0].action, 'reply');
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('hashtag execute dry-run reports retweets without credentials', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
+  try {
+    await mkdir(stateDir, { recursive: true });
+    const context = {
+      candidates: [
+        {
+          id: 'h1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'lilyAIstudy',
+          displayName: 'リリー',
+          body: '#AIニケちゃん ファンアートです',
+        },
+      ],
+    };
+    await writeFile(join(stateDir, 'hashtag-context.json'), `${JSON.stringify(context)}\n`);
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+    const items = JSON.stringify({
+      items: [
+        {
+          id: 'h1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'lilyAIstudy',
+          displayName: 'リリー',
+          body: '#AIニケちゃん ファンアートです',
+          action: 'retweet',
+          reason: 'ファンアートのため',
+        },
+      ],
+    });
+    const executed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'hashtag-execute', '--items-json', items], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(executed.status, 0, executed.stderr);
+    assert.match(executed.stdout, /RT（1件）/u);
+    assert.match(executed.stdout, /dry-run retweet/u);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

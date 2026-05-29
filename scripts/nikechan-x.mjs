@@ -160,6 +160,33 @@ async function main() {
       case 'notify-pending':
         await commandNotifyPending(readOptions(args));
         break;
+      case 'mention-context':
+        await commandMentionContext(readOptions(args));
+        break;
+      case 'mention-propose':
+        await commandMentionPropose(readOptions(args));
+        break;
+      case 'mention-pending':
+        await commandMentionPending(readOptions(args));
+        break;
+      case 'notify-mention-pending':
+        await commandNotifyMentionPending(readOptions(args));
+        break;
+      case 'mention-resolve':
+        await commandMentionResolve(readOptions(args));
+        break;
+      case 'mention-approve':
+        await commandMentionApprove(readOptions(args));
+        break;
+      case 'mention-cancel':
+        await commandMentionCancel(readOptions(args));
+        break;
+      case 'hashtag-context':
+        await commandHashtagContext(readOptions(args));
+        break;
+      case 'hashtag-execute':
+        await commandHashtagExecute(readOptions(args));
+        break;
       case 'resolve':
         await commandResolve(readOptions(args));
         break;
@@ -206,6 +233,14 @@ Commands:
   propose --candidates-json '[{"text":"...","reason":"..."}]' [--source-mode presence]
   pending
   notify-pending [--channel <discord_channel_id>] [--thread]
+  mention-context
+  mention-propose --items-json '{"items":[...]}'
+  notify-mention-pending [--channel <discord_channel_id>] [--thread]
+  mention-resolve --text <discord reply> [--notify]
+  mention-approve --ids m1,m2
+  mention-cancel [--reason "..."]
+  hashtag-context
+  hashtag-execute --items-json '{"items":[...]}'
   resolve --text <discord reply> [--notify]
   approve --ids 1,2
   cancel [--reason "..."]
@@ -501,6 +536,269 @@ async function commandNotifyPending(options) {
   }, options);
 }
 
+async function commandMentionContext(options) {
+  const candidates = await collectMentionReactionCandidates();
+  const context = {
+    workflow: 'mention-reaction',
+    releaseMode: releaseMode(),
+    persistOnThisMode: shouldPersistReactionWorkflow(),
+    candidates,
+    guardPolicy: {
+      requireMasterApproval: true,
+      noPostBeforeApproval: true,
+      dryRunDoesNotMarkTweetLogsChecked: true,
+      useNicknameOnlyWhenNamingAuthor: true,
+      noDiscordCommandsOrChannelMentions: true,
+    },
+    instruction: [
+      'Read candidates and generate a mention reaction plan.',
+      'For each candidate, choose replyAction=reply|skip and quoteAction=quote|skip.',
+      'Use candidates[].nickname exactly when naming the author. If nickname is empty, do not call the author by name.',
+      'Return JSON only, then call mention-propose with the same items JSON.',
+      'Do not call post, reply, quote, retweet, or X API directly.',
+    ],
+    outputSchema: {
+      items: [
+        {
+          id: 'm1',
+          tweetLogId: 'tweet_logs.id',
+          postId: 'target post id',
+          username: 'author username',
+          displayName: 'author display name',
+          type: 'reply|quote|mention|tweet',
+          body: 'tweet body',
+          originalTweetId: 'optional',
+          originalTweetText: 'optional',
+          replyAction: 'reply|skip',
+          quoteAction: 'quote|skip',
+          reason: 'short public-safe reason',
+          replyText: 'required when replyAction=reply',
+          quoteText: 'required when quoteAction=quote',
+        },
+      ],
+    },
+  };
+  await writeJsonAtomic(statePath('mention-context.json'), context);
+  await recordActivity('source_collect', { count: candidates.length, candidates }, 'mention-reaction', candidates.length ? 'needs_approval' : 'skipped');
+  printJsonOrMarkdown(context, options);
+}
+
+async function commandMentionPropose(options) {
+  const raw = options.itemsJson || options['items-json'];
+  if (!raw) throw new Error('missing --items-json');
+  const parsed = JSON.parse(raw);
+  const inputItems = Array.isArray(parsed) ? parsed : parsed.items;
+  if (!Array.isArray(inputItems) || !inputItems.length) throw new Error('items-json must be an array or {items: []}');
+  const context = await readJson(statePath('mention-context.json'), null);
+  const candidates = Array.isArray(context?.candidates) ? context.candidates : [];
+  const items = normalizeMentionItems(inputItems, candidates);
+  if (!items.length) throw new Error('no valid mention items matched current candidates');
+
+  const pending = {
+    id: randomUUID(),
+    kind: 'mention-reaction',
+    status: 'needs_approval',
+    createdAt: new Date().toISOString(),
+    candidates,
+    items,
+    checkedTweetLogIds: candidates.map((candidate) => candidate.tweetLogId).filter(Boolean),
+    revisionCount: Number(context?.revisionCount || 0),
+  };
+  await writeJsonAtomic(statePath('pending-mention-reaction.json'), pending);
+  if (shouldPersistReactionWorkflow()) {
+    await markTweetLogsChecked(pending.checkedTweetLogIds);
+  }
+  await recordActivity('present', {
+    pendingId: pending.id,
+    itemCount: items.length,
+    checkedTweetLogIds: shouldPersistReactionWorkflow() ? pending.checkedTweetLogIds : [],
+  }, 'mention-reaction', 'needs_approval');
+  printMentionPendingMarkdown(pending);
+}
+
+async function commandMentionPending(options) {
+  const pending = await readMentionPending();
+  if (!pending) {
+    console.log('No pending mention-reaction.');
+    return;
+  }
+  if (options.json) printJson(pending);
+  else printMentionPendingMarkdown(pending);
+}
+
+async function commandNotifyMentionPending(options) {
+  const pending = await readMentionPending();
+  if (!pending) throw new Error('no pending mention-reaction');
+  const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
+  if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
+  const content = [
+    'Xメンション反応候補です。このスレッドで「全部OK」「1だけ」「修正: ...」「見送り」のように返信してください。',
+    '',
+    formatMentionPendingMarkdown(pending),
+  ].join('\n');
+  const result = options.thread
+    ? await sendPendingThread(channel, pending, content, {
+      ...options,
+      threadTitle: options.threadTitle || `Xメンション ${jstDate()} ${pending.id.slice(0, 8)}`,
+    })
+    : await sendDiscordMessage(channel, content);
+  const notifiedPending = result.threadId
+    ? await setMentionPendingThread(pending, {
+      channel,
+      messageId: result.messageId || result.id || null,
+      threadId: result.threadId,
+      threadName: result.threadName || null,
+    })
+    : pending;
+  await recordActivity('notify', {
+    pendingId: pending.id,
+    channel,
+    messageId: result.messageId || result.id || null,
+    threadId: result.threadId || null,
+  }, 'mention-reaction', 'needs_approval');
+  printJsonOrMarkdown({
+    ok: true,
+    channel,
+    messageId: result.messageId || result.id || null,
+    threadId: result.threadId || notifiedPending.threadId || null,
+  }, options);
+}
+
+async function commandMentionResolve(options) {
+  const pending = await readMentionPending();
+  if (!pending) throw new Error('no pending mention-reaction');
+  const text = required(options.text, '--text');
+  const decision = parseReactionApprovalReply(text, pending.items.map((item) => item.id));
+  const channel = options.channel || pending.threadId || process.env.DISCORD_HOME_CHANNEL;
+  const shouldNotify = options.notify === true || options.notify === 'true';
+
+  if (decision.action === 'approve') {
+    await commandMentionApprove({ ids: decision.ids.join(',') });
+    if (shouldNotify && channel) await sendDiscordMessage(channel, `承認を受け付けました: ${decision.ids.join(', ')}`);
+    return;
+  }
+  if (decision.action === 'cancel') {
+    await commandMentionCancel({ reason: decision.reason });
+    if (shouldNotify && channel) await sendDiscordMessage(channel, `見送りとして記録しました: ${truncate(decision.reason, 200)}`);
+    return;
+  }
+  if (decision.action === 'revise') {
+    await recordActivity('feedback', { pendingId: pending.id, feedback: decision.feedback }, 'mention-reaction', 'needs_approval');
+    const context = {
+      workflow: 'mention-reaction',
+      releaseMode: releaseMode(),
+      revisionCount: Number(pending.revisionCount || 0) + 1,
+      candidates: pending.candidates,
+      currentItems: pending.items,
+      feedback: decision.feedback,
+      instruction: 'Revise currentItems according to feedback and call mention-propose again with full revised items JSON.',
+    };
+    await writeJsonAtomic(statePath('mention-context.json'), context);
+    if (shouldNotify && channel) await sendDiscordMessage(channel, `修正依頼を記録しました。候補を作り直します: ${truncate(decision.feedback, 200)}`);
+    printJsonOrMarkdown({ ok: true, action: 'revise', pendingId: pending.id, feedback: decision.feedback, instruction: context.instruction }, options);
+    return;
+  }
+
+  if (shouldNotify && channel) {
+    await sendDiscordMessage(channel, '承認内容を判定できませんでした。番号、修正指示、または見送りを送ってください。');
+  }
+  printJsonOrMarkdown({ ok: false, action: decision.action, reason: decision.reason }, options);
+  if (options.strict !== 'false') process.exitCode = 2;
+}
+
+async function commandMentionApprove(options) {
+  const pending = await readMentionPending();
+  if (!pending) throw new Error('no pending mention-reaction');
+  const ids = String(options.ids || options.id || '').split(',').map((id) => normalizeReactionItemId(id, 'm')).filter(Boolean);
+  if (!ids.length) throw new Error('missing --ids');
+  const selected = pending.items.filter((item) => ids.includes(item.id));
+  if (!selected.length) throw new Error(`no mention items matched: ${ids.join(',')}`);
+  const result = await executeMentionReactions(selected, pending);
+  await writeJsonAtomic(statePath('last-mention-reaction-result.json'), result);
+  await removeMentionPending();
+  await recordActivity('execute', result, 'mention-reaction', reactionResultStatus(result.results, 'skip'));
+  console.log(result.summary);
+  for (const entry of result.results) {
+    console.log([entry.itemId, entry.action, entry.replyUrl || entry.quoteUrl || entry.error || ''].filter(Boolean).join(' '));
+  }
+}
+
+async function commandMentionCancel(options) {
+  const pending = await readMentionPending();
+  if (!pending) {
+    console.log('No pending mention-reaction.');
+    return;
+  }
+  const reason = options.reason || 'cancelled';
+  await removeMentionPending();
+  await recordActivity('cancel', { pendingId: pending.id, reason }, 'mention-reaction', 'cancelled');
+  console.log(`Cancelled pending mention-reaction: ${reason}`);
+}
+
+async function commandHashtagContext(options) {
+  const candidates = await collectHashtagReactionCandidates();
+  const context = {
+    workflow: 'hashtag-reaction',
+    releaseMode: releaseMode(),
+    persistOnThisMode: shouldPersistReactionWorkflow(),
+    candidates,
+    guardPolicy: {
+      autonomousExecution: true,
+      noReplyOrQuote: true,
+      dryRunDoesNotMarkTweetLogsChecked: true,
+      retweetOnlyFanArtSupportIntroOrEvent: true,
+      skipSpamBotUnrelatedOrUnsafe: true,
+    },
+    instruction: [
+      'Read candidates and decide retweet or skip.',
+      'This workflow never replies or quote-tweets.',
+      'Return JSON only, then call hashtag-execute with the same items JSON.',
+      'Do not call post, reply, quote, retweet, or X API directly.',
+    ],
+    outputSchema: {
+      items: [
+        {
+          id: 'h1',
+          tweetLogId: 'tweet_logs.id',
+          postId: 'target post id',
+          username: 'author username',
+          displayName: 'author display name',
+          body: 'tweet body',
+          action: 'retweet|skip',
+          reason: 'short public-safe reason',
+        },
+      ],
+    },
+  };
+  await writeJsonAtomic(statePath('hashtag-context.json'), context);
+  await recordActivity('source_collect', { count: candidates.length, candidates }, 'hashtag-reaction', candidates.length ? 'needs_action' : 'skipped');
+  printJsonOrMarkdown(context, options);
+}
+
+async function commandHashtagExecute(options) {
+  const raw = options.itemsJson || options['items-json'];
+  if (!raw) throw new Error('missing --items-json');
+  const parsed = JSON.parse(raw);
+  const inputItems = Array.isArray(parsed) ? parsed : parsed.items;
+  if (!Array.isArray(inputItems) || !inputItems.length) throw new Error('items-json must be an array or {items: []}');
+  const context = await readJson(statePath('hashtag-context.json'), null);
+  const candidates = Array.isArray(context?.candidates) ? context.candidates : [];
+  const items = normalizeHashtagItems(inputItems, candidates);
+  if (!items.length) throw new Error('no valid hashtag items matched current candidates');
+  if (shouldPersistReactionWorkflow()) {
+    await markTweetLogsChecked(candidates.map((candidate) => candidate.tweetLogId).filter(Boolean));
+  }
+  const result = await executeHashtagReactions(items, candidates);
+  await writeJsonAtomic(statePath('last-hashtag-reaction-result.json'), result);
+  await recordActivity('execute', result, 'hashtag-reaction', reactionResultStatus(result.results, 'retweet'));
+  const report = formatHashtagReport(items, result.results);
+  if (options.notify === true || options.notify === 'true') {
+    const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
+    if (channel) await sendDiscordMessage(channel, report);
+  }
+  console.log(report);
+}
+
 async function commandResolve(options) {
   const pending = await readPending();
   if (!pending) throw new Error('no pending self-tweet');
@@ -673,7 +971,10 @@ async function commandState(options) {
     releaseMode: releaseMode(),
     runState: await readJson(statePath('run-state.json'), {}),
     pending: await readPending(),
+    pendingMentionReaction: await readMentionPending(),
     lastResult: await readJson(statePath('last-self-tweet-result.json'), null),
+    lastMentionReactionResult: await readJson(statePath('last-mention-reaction-result.json'), null),
+    lastHashtagReactionResult: await readJson(statePath('last-hashtag-reaction-result.json'), null),
   };
   printJsonOrMarkdown(state, options);
 }
@@ -749,6 +1050,619 @@ async function commandReleaseMode(options) {
     liveArmed: validation.liveArmed,
     envPath,
   }, options);
+}
+
+async function collectMentionReactionCandidates() {
+  const since = recentCutoffIso();
+  const [rawReplies, rawMentions] = await Promise.all([
+    supabaseGet(`tweet_logs?checked_by_nikechan=eq.false&created_at=gte.${encodeURIComponent(since)}&type=in.(reply,quote,mention)&order=created_at.asc&limit=10&select=id,post_id,user_id,username,name,body,type,original_tweet_id,original_tweet_url,created_at`),
+    supabaseGet(`tweet_logs?checked_by_nikechan=eq.false&created_at=gte.${encodeURIComponent(since)}&type=neq.reply&type=neq.quote&body=like.*%40${encodeURIComponent(ACCOUNT_NAME)}*&order=created_at.asc&limit=10&select=id,post_id,user_id,username,name,body,type,created_at`),
+  ]);
+  const logs = [...rows(rawReplies), ...rows(rawMentions)];
+  const deduped = [...new Map(logs.map((log) => [String(log.post_id || log.id), log])).values()]
+    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+    .slice(0, 10);
+
+  const candidates = await Promise.all(deduped.map(async (log, index) => {
+    const authorContext = await collectTweetAuthorContext(log);
+    const originalTweet = log.original_tweet_id
+      ? rows(await supabaseGet(`tweets?tweet_id=eq.${encodeURIComponent(log.original_tweet_id)}&select=tweet_id,content,url,created_at,impression_count,like_count,retweet_count,reply_count,quote_count,bookmark_count,metrics_updated_at`))[0]
+      : null;
+    return {
+      id: `m${index + 1}`,
+      tweetLogId: String(log.id || ''),
+      postId: String(log.post_id || ''),
+      authorUserId: authorContext.userId || undefined,
+      username: String(log.username || ''),
+      displayName: String(log.name || log.username || ''),
+      authorName: authorContext.authorName || undefined,
+      nickname: authorContext.nickname || undefined,
+      type: String(log.type || 'mention'),
+      body: String(log.body || ''),
+      createdAt: log.created_at || undefined,
+      originalTweetId: log.original_tweet_id || undefined,
+      originalTweetText: originalTweet?.content || undefined,
+      originalTweetUrl: originalTweet?.url || log.original_tweet_url || undefined,
+      personContext: authorContext.text,
+    };
+  }));
+  return candidates.filter((candidate) => candidate.tweetLogId && candidate.postId);
+}
+
+async function collectHashtagReactionCandidates() {
+  const since = recentCutoffIso();
+  const raw = await supabaseGet(`tweet_logs?checked_by_nikechan=eq.false&created_at=gte.${encodeURIComponent(since)}&or=(hashtags.cs.%5B%22%23AI%E3%83%8B%E3%82%B1%E3%81%A1%E3%82%83%E3%82%93%22%5D,hashtags.cs.%5B%22AI%E3%83%8B%E3%82%B1%E3%81%A1%E3%82%83%E3%82%93%22%5D)&order=created_at.desc&limit=10&select=id,post_id,user_id,username,name,body,created_at,hashtags`);
+  const logs = rows(raw)
+    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+    .slice(0, 10);
+  const candidates = await Promise.all(logs.map(async (log, index) => {
+    const [authorContext, mediaContext] = await Promise.all([
+      collectTweetAuthorContext(log),
+      collectHashtagMediaContext(log.post_id),
+    ]);
+    return {
+      id: `h${index + 1}`,
+      tweetLogId: String(log.id || ''),
+      postId: String(log.post_id || ''),
+      authorUserId: authorContext.userId || undefined,
+      username: String(log.username || ''),
+      displayName: String(log.name || log.username || ''),
+      authorName: authorContext.authorName || undefined,
+      nickname: authorContext.nickname || undefined,
+      body: String(log.body || ''),
+      createdAt: log.created_at || undefined,
+      hashtags: Array.isArray(log.hashtags) ? log.hashtags.map(String) : [],
+      personContext: authorContext.text,
+      mediaContext,
+    };
+  }));
+  return candidates.filter((candidate) => candidate.tweetLogId && candidate.postId);
+}
+
+async function collectTweetAuthorContext(log) {
+  const username = String(log.username || log.user_id || 'unknown').replace(/^@/u, '');
+  const displayName = String(log.name || username);
+  const user = await findOrCreateTwitterUser({
+    platformUserId: String(log.user_id || ''),
+    username,
+    displayName,
+  });
+  const userId = user?.id || '';
+  const nickname = String(user?.nickname || fallbackNickname(displayName, username) || '').trim();
+  if (userId && !user?.nickname && nickname && shouldPersistReactionWorkflow()) {
+    await supabasePatch(`users?id=eq.${encodeURIComponent(userId)}`, {
+      nickname,
+      updated_at: new Date().toISOString(),
+    });
+  }
+  const [episodes, thirdParties] = await Promise.all([
+    userId ? publicContactEpisodes(userId, 5) : Promise.resolve([]),
+    collectThirdPartyContext(String(log.body || '')),
+  ]);
+  const profile = projectPublicUser(user, 'x', nickname);
+  const text = [
+    `## 投稿者 @${username}`,
+    `必ず使う呼称: ${nickname || '未設定（名前呼び禁止）'}`,
+    truncate(JSON.stringify(profile, null, 2), 1600),
+    '',
+    '## 直近エピソード',
+    truncate(JSON.stringify(episodes, null, 2), 1200),
+    thirdParties ? `\n## 本文に出る第三者候補\n${thirdParties}` : '',
+  ].filter(Boolean).join('\n');
+  return {
+    userId,
+    authorName: displayName,
+    nickname,
+    text,
+  };
+}
+
+async function findOrCreateTwitterUser({ platformUserId, username, displayName }) {
+  const byId = platformUserId
+    ? await platformAccountUser(`platform_user_id=eq.${encodeURIComponent(platformUserId)}`)
+    : null;
+  if (byId) return byId;
+  const byUsername = username
+    ? await platformAccountUser(`username=eq.${encodeURIComponent(username)}`)
+    : null;
+  if (byUsername) {
+    if (platformUserId && shouldPersistReactionWorkflow()) {
+      await supabasePatch(`platform_accounts?platform=eq.twitter&username=eq.${encodeURIComponent(username)}`, {
+        platform_user_id: platformUserId,
+      });
+    }
+    return byUsername;
+  }
+  if (!shouldPersistReactionWorkflow()) {
+    return {
+      id: '',
+      name: displayName || username,
+      nickname: null,
+      bio: null,
+      relationship: null,
+      interaction_count: null,
+      last_interaction_at: null,
+    };
+  }
+  const now = new Date().toISOString();
+  const bio = await fetchFxTwitterBio(username).catch(() => '');
+  const created = await supabaseInsertReturning('users', {
+    name: displayName || username,
+    first_seen_at: now,
+    ...(bio ? { bio } : {}),
+  });
+  const user = Array.isArray(created) ? created[0] : created;
+  if (!user?.id) return null;
+  await supabaseInsert('platform_accounts', {
+    user_id: user.id,
+    platform: 'twitter',
+    platform_user_id: platformUserId || username,
+    username,
+    display_name: displayName || username,
+  });
+  return user;
+}
+
+async function platformAccountUser(filter) {
+  const result = await supabaseGet(`platform_accounts?platform=eq.twitter&${filter}&select=user_id,username,display_name,users(id,name,nickname,bio,relationship,interaction_count,last_interaction_at)&limit=1`);
+  const row = rows(result)[0];
+  return row?.users || null;
+}
+
+async function publicContactEpisodes(userId, limit) {
+  const result = await supabaseGet(`contact_episodes?user_id=eq.${encodeURIComponent(userId)}&source=in.(twitter)&order=occurred_at.desc&limit=${Number(limit) || 5}&select=id,content,source,event_type,occurred_at`);
+  return rows(result).map((row) => ({
+    ...row,
+    metadata: {
+      memory_class: 'relationship_public',
+      visibility: 'surface_internal',
+      surface: 'x',
+      provenance: { table: 'contact_episodes', id: row.id, source: row.source },
+    },
+  }));
+}
+
+async function collectThirdPartyContext(text) {
+  const terms = extractMentionPersonTerms(text).slice(0, 4);
+  if (!terms.length) return '';
+  const results = await Promise.all(terms.map(async (term) => {
+    const found = await supabaseGet(`users?name=ilike.%2A${encodeURIComponent(term)}%2A&order=last_interaction_at.desc.nullslast&limit=5&select=id,name,nickname,bio,relationship,interaction_count,last_interaction_at`);
+    return `### ${term}\n${truncate(JSON.stringify(rows(found).map((user) => projectPublicUser(user, 'x')), null, 2), 700)}`;
+  }));
+  return results.join('\n\n');
+}
+
+async function collectHashtagMediaContext(postId) {
+  if (!postId) return '（post_idなし）';
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const response = await fetch(`https://api.fxtwitter.com/status/${encodeURIComponent(postId)}`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!response.ok) return `（fxtwitter取得失敗: ${response.status}）`;
+    const parsed = await response.json();
+    const tweet = parsed.tweet && typeof parsed.tweet === 'object' ? parsed.tweet : parsed;
+    if (!tweet.media) return '（メディアなし）';
+    return truncate(JSON.stringify(tweet.media, null, 2), 2000);
+  } catch (error) {
+    return `（メディア取得失敗: ${error.message || String(error)}）`;
+  }
+}
+
+async function fetchFxTwitterBio(username) {
+  if (!username || username === 'unknown') return '';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  const response = await fetch(`https://api.fxtwitter.com/${encodeURIComponent(username)}`, { signal: controller.signal });
+  clearTimeout(timeout);
+  if (!response.ok) return '';
+  const parsed = await response.json();
+  return String(parsed?.user?.description || '').trim().slice(0, 500);
+}
+
+function projectPublicUser(user, surface, nicknameOverride) {
+  if (!user) return null;
+  const relationship = String(user.relationship || '');
+  return {
+    id: user.id || undefined,
+    name: user.name || null,
+    nickname: nicknameOverride || user.nickname || null,
+    bio: user.bio || null,
+    relationship_public: relationship
+      ? /family|close|friend|partner|親|友|家族/iu.test(relationship)
+        ? 'known_close'
+        : 'known'
+      : null,
+    interaction_count: user.interaction_count ?? null,
+    last_interaction_at: user.last_interaction_at || null,
+    metadata: {
+      memory_class: 'relationship_public',
+      visibility: 'surface_internal',
+      surface,
+      redacted_fields: ['memo', 'context', 'traits', 'relationship'],
+    },
+  };
+}
+
+function normalizeMentionItems(inputItems, candidates) {
+  const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const byLogId = new Map(candidates.map((candidate) => [candidate.tweetLogId, candidate]));
+  return inputItems.map((item, index) => {
+    const id = normalizeReactionItemId(item.id || `m${index + 1}`, 'm');
+    const candidate = byLogId.get(String(item.tweetLogId || '')) || byId.get(id) || candidates[index];
+    if (!candidate) return null;
+    const replyText = sanitizeTweetText(String(item.replyText || ''));
+    const quoteText = sanitizeTweetText(String(item.quoteText || ''));
+    const guardedReplyText = guardMentionText(replyText, candidate);
+    const guardedQuoteText = guardMentionText(quoteText, candidate);
+    const replyGuard = item.replyAction === 'reply' && guardedReplyText
+      ? guardText(guardedReplyText)
+      : { ok: true, errors: [], warnings: [], length: 0, text: '' };
+    const quoteGuard = item.quoteAction === 'quote' && guardedQuoteText
+      ? guardText(guardedQuoteText)
+      : { ok: true, errors: [], warnings: [], length: 0, text: '' };
+    return {
+      id,
+      tweetLogId: String(item.tweetLogId || candidate.tweetLogId),
+      postId: String(item.postId || candidate.postId),
+      username: String(item.username || candidate.username),
+      displayName: String(item.displayName || candidate.displayName),
+      type: String(item.type || candidate.type || 'mention'),
+      body: String(item.body || candidate.body),
+      originalTweetId: item.originalTweetId ? String(item.originalTweetId) : candidate.originalTweetId,
+      originalTweetText: item.originalTweetText ? String(item.originalTweetText) : candidate.originalTweetText,
+      replyAction: item.replyAction === 'reply' && guardedReplyText && replyGuard.ok ? 'reply' : 'skip',
+      quoteAction: item.quoteAction === 'quote' && guardedQuoteText && quoteGuard.ok ? 'quote' : 'skip',
+      reason: String(item.reason || 'AI判定'),
+      replyText: item.replyAction === 'reply' && guardedReplyText && replyGuard.ok ? guardedReplyText : undefined,
+      quoteText: item.quoteAction === 'quote' && guardedQuoteText && quoteGuard.ok ? guardedQuoteText : undefined,
+      guards: {
+        reply: replyGuard,
+        quote: quoteGuard,
+      },
+    };
+  }).filter(Boolean).slice(0, 10);
+}
+
+function normalizeHashtagItems(inputItems, candidates) {
+  const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const byLogId = new Map(candidates.map((candidate) => [candidate.tweetLogId, candidate]));
+  return inputItems.map((item, index) => {
+    const id = normalizeReactionItemId(item.id || `h${index + 1}`, 'h');
+    const candidate = byLogId.get(String(item.tweetLogId || '')) || byId.get(id) || candidates[index];
+    if (!candidate) return null;
+    return {
+      id,
+      tweetLogId: String(item.tweetLogId || candidate.tweetLogId),
+      postId: String(item.postId || candidate.postId),
+      username: String(item.username || candidate.username),
+      displayName: String(item.displayName || candidate.displayName),
+      body: String(item.body || candidate.body),
+      action: item.action === 'retweet' ? 'retweet' : 'skip',
+      reason: String(item.reason || 'AI判定'),
+    };
+  }).filter(Boolean).slice(0, 10);
+}
+
+async function executeMentionReactions(items, pending) {
+  const results = [];
+  let replyCount = 0;
+  let quoteCount = 0;
+  let skipCount = 0;
+  for (const item of items) {
+    const actions = [];
+    const result = { itemId: item.id, action: 'skip' };
+    try {
+      if (item.replyAction === 'reply' && item.replyText) {
+        const posted = await postTweet({ action: 'reply', text: item.replyText, tweetId: item.postId, source: 'mention-reaction' });
+        result.replyUrl = posted.url || `dry-run reply: ${item.replyText}`;
+        actions.push('reply');
+        replyCount += 1;
+      }
+      if (item.quoteAction === 'quote' && item.quoteText) {
+        const posted = await postTweet({ action: 'quote', text: item.quoteText, tweetId: item.postId, source: 'mention-reaction' });
+        result.quoteUrl = posted.url || `dry-run quote: ${item.quoteText}`;
+        actions.push('quote');
+        quoteCount += 1;
+      }
+      if (!actions.length) {
+        skipCount += 1;
+        actions.push('skip');
+      }
+      result.action = actions.join('+');
+      if (shouldPersistReactionWorkflow()) {
+        await recordTweetLogAction(item.tweetLogId, result.action);
+        await recordMentionContactEpisode(item, pending, result);
+      }
+    } catch (error) {
+      result.error = error.message || String(error);
+    }
+    results.push(result);
+  }
+  if (shouldPersistReactionWorkflow() && replyCount + quoteCount > 0) {
+    await recordLocalEpisode(buildMentionLocalEpisode(items, results, { replyCount, quoteCount }));
+  }
+  return {
+    mode: releaseMode(),
+    dryRun: !shouldPersistReactionWorkflow(),
+    summary: `${items.length}件チェック: 返信${replyCount}件、引用RT${quoteCount}件、スキップ${skipCount}件`,
+    results,
+  };
+}
+
+async function executeHashtagReactions(items, candidates) {
+  const candidateByLogId = new Map(candidates.map((candidate) => [candidate.tweetLogId, candidate]));
+  const results = [];
+  let retweetCount = 0;
+  let skipCount = 0;
+  for (const item of items) {
+    const result = { itemId: item.id, action: item.action, reason: item.reason };
+    try {
+      if (item.action === 'retweet') {
+        const posted = await postTweet({ action: 'retweet', tweetId: item.postId, source: 'hashtag-reaction' });
+        result.url = posted.url || `dry-run retweet: ${item.postId}`;
+        retweetCount += 1;
+        if (shouldPersistReactionWorkflow()) {
+          await recordTweetLogAction(item.tweetLogId, 'retweet');
+          const candidate = candidateByLogId.get(item.tweetLogId);
+          if (candidate?.authorUserId) {
+            await recordContactEpisode(
+              candidate.authorUserId,
+              `@${item.username} の #AIニケちゃん ツイート「${truncate(item.body, 60)}」をRT`,
+              'twitter',
+              'rt',
+              'tweet_logs',
+              item.tweetLogId,
+            );
+            await touchUser(candidate.authorUserId);
+          }
+        }
+      } else {
+        skipCount += 1;
+        if (shouldPersistReactionWorkflow()) await recordTweetLogAction(item.tweetLogId, 'skip');
+      }
+    } catch (error) {
+      result.error = error.message || String(error);
+    }
+    results.push(result);
+  }
+  if (shouldPersistReactionWorkflow() && retweetCount > 0) {
+    await recordLocalEpisode(buildHashtagLocalEpisode(items, results));
+  }
+  return {
+    mode: releaseMode(),
+    dryRun: !shouldPersistReactionWorkflow(),
+    summary: `${items.length}件チェック: RT${retweetCount}件、スキップ${skipCount}件`,
+    results,
+  };
+}
+
+async function recordMentionContactEpisode(item, pending, result) {
+  if (result.action === 'skip') return;
+  const candidate = pending.candidates.find((entry) => entry.tweetLogId === item.tweetLogId);
+  if (!candidate?.authorUserId) return;
+  await recordContactEpisode(
+    candidate.authorUserId,
+    `@${item.username} の「${truncate(item.body, 60)}」に ${result.action} で反応`,
+    'twitter',
+    result.action.includes('reply') ? 'reply' : 'quote',
+    'tweet_logs',
+    item.tweetLogId,
+  );
+  await touchUser(candidate.authorUserId);
+}
+
+async function recordContactEpisode(userId, content, source, eventType, sourceTable, sourceRecordId) {
+  await supabaseInsert('contact_episodes', {
+    user_id: userId,
+    content,
+    source,
+    event_type: eventType,
+    source_table: sourceTable,
+    source_record_id: sourceRecordId,
+  });
+}
+
+async function touchUser(userId) {
+  const current = rows(await supabaseGet(`users?id=eq.${encodeURIComponent(userId)}&select=interaction_count`))[0];
+  await supabasePatch(`users?id=eq.${encodeURIComponent(userId)}`, {
+    interaction_count: Number(current?.interaction_count || 0) + 1,
+    last_interaction_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function markTweetLogsChecked(ids) {
+  if (!shouldPersistReactionWorkflow()) return;
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return;
+  await supabasePatch(`tweet_logs?id=in.(${unique.map(encodeURIComponent).join(',')})`, { checked_by_nikechan: true });
+}
+
+async function recordTweetLogAction(id, action) {
+  const filter = /^\d+$/u.test(String(id))
+    ? `post_id=eq.${encodeURIComponent(id)}`
+    : `id=eq.${encodeURIComponent(id)}`;
+  await supabasePatch(`tweet_logs?${filter}`, { nikechan_action: action });
+}
+
+function parseReactionApprovalReply(text, itemIds = []) {
+  const normalized = String(text || '').trim();
+  const ids = itemIds.map((id) => normalizeReactionItemId(id, String(id).startsWith('h') ? 'h' : 'm'));
+  if (!normalized) return { action: 'unknown', reason: 'empty reply' };
+  if (/見送り|却下|キャンセル|cancel|skip|スキップ|やめ|なし|不要/u.test(normalized)) {
+    return { action: 'cancel', reason: normalized };
+  }
+  if (/修正|直して|変更|作り直|再生成|別案|rewrite|revise|もう一度/u.test(normalized)) {
+    return { action: 'revise', feedback: normalized };
+  }
+  if (/全部|すべて|全て|all/u.test(normalized)) return { action: 'approve', ids };
+  const selected = new Set();
+  for (const match of normalized.matchAll(/(?:^|[^\da-z])([mh]?\d+)(?:\s*(?:番|つ目|だけ|のみ|で|に|を|と|,|、|\/|$))/giu)) {
+    const id = normalizeReactionItemId(match[1], ids[0]?.[0] || 'm');
+    if (ids.includes(id)) selected.add(id);
+  }
+  if (selected.size > 0) return { action: 'approve', ids: [...selected] };
+  if (/ok|OK|承認|投稿して|リプして|引用して|実行して|post/u.test(normalized)) {
+    if (ids.length === 1) return { action: 'approve', ids };
+    return { action: 'needs_id', reason: 'multiple candidates need explicit ids' };
+  }
+  return { action: 'unknown', reason: 'no approval intent detected' };
+}
+
+function normalizeReactionItemId(value, prefix) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  if (new RegExp(`^${prefix}\\d+$`, 'u').test(text)) return text;
+  const number = text.match(/\d+/u)?.[0];
+  return number ? `${prefix}${number}` : text;
+}
+
+function guardMentionText(text, candidate) {
+  if (!text) return '';
+  const nickname = String(candidate.nickname || '').trim();
+  const aliases = [candidate.username ? `@${String(candidate.username).replace(/^@/u, '')}` : '', candidate.displayName, candidate.authorName]
+    .map((value) => String(value || '').trim())
+    .filter((value) => value && value !== nickname)
+    .sort((a, b) => b.length - a.length);
+  let guarded = text;
+  for (const alias of [...new Set(aliases)]) {
+    guarded = guarded.replace(new RegExp(escapeRegExp(alias), 'gu'), nickname || 'そちら');
+  }
+  if (nickname) {
+    guarded = guarded.replace(new RegExp(`${escapeRegExp(nickname)}(さん|ちゃん|くん|様|さま)`, 'gu'), nickname);
+  }
+  if (/おかえり|お帰り/u.test(candidate.body) && /おかえり|お帰り/u.test(guarded)) {
+    guarded = 'ただいま戻りました。迎えてくれてありがとうございます。今日からまた少しずつ動いていきます。';
+  }
+  return sanitizeTweetText(guarded.replace(/\s{2,}/gu, ' '));
+}
+
+function sanitizeTweetText(text) {
+  return String(text || '')
+    .replace(/^["「]|["」]$/gu, '')
+    .replace(/\s+\n/gu, '\n')
+    .replace(/\n{3,}/gu, '\n\n')
+    .trim()
+    .slice(0, 280);
+}
+
+function fallbackNickname(displayName, username) {
+  const base = String(displayName || username || '')
+    .replace(/^@/u, '')
+    .replace(/[｜|].*$/u, '')
+    .replace(/\s+/gu, '')
+    .replace(/[^\p{L}\p{N}_ぁ-んァ-ヶー一-龯]/gu, '')
+    .slice(0, 16);
+  if (!base) return '';
+  if (/(さん|ちゃん|くん|氏|先生)$/u.test(base)) return base;
+  return `${base}さん`;
+}
+
+function extractMentionPersonTerms(text) {
+  const terms = new Set();
+  for (const match of String(text || '').matchAll(/@([a-zA-Z0-9_]{2,20})/g)) terms.add(match[1]);
+  for (const match of String(text || '').matchAll(/([一-龯ぁ-んァ-ヶA-Za-z0-9_]{2,16}(?:ちゃん|さん|氏|くん|たん|先生))/g)) {
+    terms.add(match[1]);
+  }
+  return [...terms].filter((term) => !['ai_nikechan', 'AIニケちゃん', 'ニケちゃん'].includes(term));
+}
+
+function formatMentionPendingMarkdown(pending) {
+  const lines = ['メンション反応候補:', ''];
+  for (const item of pending.items) {
+    lines.push(`${item.id}. @${item.username} - 「${truncate(item.body, 90)}」`);
+    lines.push(`   判断: reply=${item.replyAction}, quote=${item.quoteAction}`);
+    if (item.replyText) lines.push(`   返信案: ${item.replyText}`);
+    if (item.quoteText) lines.push(`   引用案: ${item.quoteText}`);
+    lines.push(`   理由: ${item.reason}`);
+    const guardErrors = [
+      ...(item.guards?.reply?.errors || []),
+      ...(item.guards?.quote?.errors || []),
+    ];
+    if (guardErrors.length) lines.push(`   安全確認: ${guardErrors.join('; ')}`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function printMentionPendingMarkdown(pending) {
+  console.log(formatMentionPendingMarkdown(pending));
+}
+
+function formatHashtagReport(items, results) {
+  const resultById = new Map(results.map((result) => [result.itemId, result]));
+  const retweets = items.filter((item) => resultById.get(item.id)?.action === 'retweet');
+  const skips = items.filter((item) => resultById.get(item.id)?.action !== 'retweet');
+  const lines = ['ハッシュタグ反応レポート', '', `RT（${retweets.length}件）:`];
+  if (retweets.length) {
+    for (const [index, item] of retweets.entries()) {
+      const result = resultById.get(item.id);
+      lines.push(`${index + 1}. @${item.username} - 「${truncate(item.body, 90)}」`);
+      lines.push(`   理由: ${item.reason}`);
+      if (result?.error) lines.push(`   エラー: ${truncate(result.error, 120)}`);
+      else if (result?.url) lines.push(`   ${result.url}`);
+    }
+  } else {
+    lines.push('なし');
+  }
+  lines.push('', `スキップ（${skips.length}件）:`);
+  if (skips.length) {
+    for (const [index, item] of skips.entries()) {
+      lines.push(`${index + 1}. @${item.username} - 「${truncate(item.body, 90)}」`);
+      lines.push(`   理由: ${item.reason}`);
+    }
+  } else {
+    lines.push('なし');
+  }
+  return lines.join('\n');
+}
+
+function buildMentionLocalEpisode(items, results, counts) {
+  const resultById = new Map(results.map((result) => [result.itemId, result]));
+  const acted = items.filter((item) => {
+    const result = resultById.get(item.id);
+    return result && !result.error && result.action !== 'skip';
+  });
+  if (!acted.length) return '';
+  const highlights = acted.slice(0, 3).map((item) => {
+    const result = resultById.get(item.id);
+    const action = result?.action === 'reply+quote' ? '返信と引用RT' : result?.action === 'quote' ? '引用RT' : '返信';
+    return `@${item.username}の「${truncate(item.body, 34)}」に${action}`;
+  }).join('、');
+  const omitted = acted.length > 3 ? `など${acted.length}件` : '';
+  return `mention-reaction: ${highlights}${omitted}。返信${counts.replyCount}件・引用RT${counts.quoteCount}件`;
+}
+
+function buildHashtagLocalEpisode(items, results) {
+  const resultById = new Map(results.map((result) => [result.itemId, result]));
+  const retweeted = items.filter((item) => {
+    const result = resultById.get(item.id);
+    return result && !result.error && result.action === 'retweet';
+  });
+  if (!retweeted.length) return '';
+  const highlights = retweeted.slice(0, 3).map((item) => `@${item.username}の「${truncate(item.body, 38)}」をRT`).join('、');
+  const omitted = retweeted.length > 3 ? `など${retweeted.length}件` : '';
+  return `hashtag-reaction: ${highlights}${omitted}`;
+}
+
+function reactionResultStatus(results) {
+  if (!shouldPersistReactionWorkflow()) return 'dry-run';
+  if (results.some((entry) => entry.error)) return 'failed';
+  if (results.every((entry) => entry.action === 'skip')) return 'skipped';
+  return 'success';
+}
+
+function shouldPersistReactionWorkflow() {
+  return isLiveMode(releaseMode()) && process.env.NIKECHAN_X_LIVE_ARMED === 'yes';
+}
+
+function recentCutoffIso() {
+  return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function buildDoctorSummary() {
@@ -966,21 +1880,21 @@ async function recordTweet(result) {
   });
 }
 
-async function recordActivity(stage, parsed) {
+async function recordActivity(stage, parsed, workflow = 'self-tweet', status) {
   const entry = {
     at: new Date().toISOString(),
-    workflow: 'self-tweet',
+    workflow,
     stage,
     parsed,
   };
   await ensureDir(STATE_DIR);
   await appendFile(statePath('activity.jsonl'), `${JSON.stringify(entry)}\n`);
   await supabaseInsert('twitter_activity_logs', {
-    workflow: 'self-tweet',
+    workflow,
     stage,
     raw_content: JSON.stringify(parsed).slice(0, 3000),
     parsed,
-    status: stage === 'error' ? 'failed' : stage === 'execute' ? 'success' : 'needs_approval',
+    status: status || (stage === 'error' ? 'failed' : stage === 'execute' ? 'success' : 'needs_approval'),
     created_by: 'nikechan-x-hermes',
   });
 }
@@ -996,6 +1910,7 @@ async function recordTopic(text) {
 }
 
 async function recordLocalEpisode(content) {
+  if (!String(content || '').trim()) return;
   await supabaseInsert('local_episodes', {
     date: jstDate(),
     content: truncate(content, 150),
@@ -1041,6 +1956,51 @@ async function supabaseInsert(table, row) {
     return { status: 'inserted', table };
   } catch (error) {
     return { status: 'error', table, error: error.message };
+  }
+}
+
+async function supabaseInsertReturning(table, row) {
+  const base = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!base || !key) return null;
+  try {
+    const response = await fetch(`${base.replace(/\/$/, '')}/rest/v1/${table}`, {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify(row),
+    });
+    const text = await response.text();
+    if (!response.ok) return null;
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function supabasePatch(path, patch) {
+  const base = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!base || !key) return { status: 'skipped', reason: 'supabase env missing' };
+  try {
+    const response = await fetch(`${base.replace(/\/$/, '')}/rest/v1/${path}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify(patch),
+    });
+    if (!response.ok) return { status: 'error', code: response.status, body: await response.text(), path };
+    return { status: 'updated', path };
+  } catch (error) {
+    return { status: 'error', error: error.message, path };
   }
 }
 
@@ -1236,6 +2196,10 @@ async function readPending() {
   return readJson(statePath('pending-self-tweet.json'), null);
 }
 
+async function readMentionPending() {
+  return readJson(statePath('pending-mention-reaction.json'), null);
+}
+
 async function setPendingThread(pending, thread) {
   const next = {
     ...pending,
@@ -1249,10 +2213,29 @@ async function setPendingThread(pending, thread) {
   return next;
 }
 
+async function setMentionPendingThread(pending, thread) {
+  const next = {
+    ...pending,
+    channel: thread.channel,
+    messageId: thread.messageId,
+    threadId: thread.threadId,
+    threadName: thread.threadName,
+    notifiedAt: new Date().toISOString(),
+  };
+  await writeJsonAtomic(statePath('pending-mention-reaction.json'), next);
+  return next;
+}
+
 async function removePending() {
   const path = statePath('pending-self-tweet.json');
   if (!existsSync(path)) return;
   await rename(path, statePath(`pending-self-tweet.${Date.now()}.closed.json`));
+}
+
+async function removeMentionPending() {
+  const path = statePath('pending-mention-reaction.json');
+  if (!existsSync(path)) return;
+  await rename(path, statePath(`pending-mention-reaction.${Date.now()}.closed.json`));
 }
 
 async function readJson(path, fallback) {

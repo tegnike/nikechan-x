@@ -59,6 +59,12 @@ node scripts/nikechan-x.mjs resolve --text "1で" --notify
 node scripts/nikechan-x.mjs pending
 node scripts/nikechan-x.mjs approve --ids 1
 node scripts/nikechan-x.mjs cancel --reason "見送り"
+node scripts/nikechan-x.mjs mention-context
+node scripts/nikechan-x.mjs mention-propose --items-json '{"items":[...]}'
+node scripts/nikechan-x.mjs notify-mention-pending --thread
+node scripts/nikechan-x.mjs mention-resolve --text "全部OK" --notify
+node scripts/nikechan-x.mjs hashtag-context
+node scripts/nikechan-x.mjs hashtag-execute --items-json '{"items":[...]}'
 node scripts/nikechan-x.mjs doctor
 node scripts/nikechan-x.mjs preflight-live
 node scripts/nikechan-x.mjs release-mode --set dry-run
@@ -66,11 +72,13 @@ node scripts/nikechan-x.mjs release-mode --set dry-run
 
 記録先:
 
-- local: `state/run-state.json`, `state/activity.jsonl`, `state/last-self-tweet-result.json`
+- local: `state/run-state.json`, `state/activity.jsonl`, `state/last-self-tweet-result.json`, `state/pending-mention-reaction.json`, `state/last-mention-reaction-result.json`, `state/last-hashtag-reaction-result.json`
 - Supabase best-effort: `tweets`, `twitter_activity_logs`, `twitter_run_state`, `topics`, `local_episodes`
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` の間はX APIを呼びません。`live` / `canary-live` のときだけ投稿します。
 live投稿には `NIKECHAN_X_RELEASE_MODE=live` と `NIKECHAN_X_LIVE_ARMED=yes` の両方が必要です。切り替えは明示確認つきCLIで行います。
+
+mention-reaction / hashtag-reaction はdry-run中、X API投稿だけでなく `tweet_logs.checked_by_nikechan`、`nikechan_action`、人物エピソードも更新しません。未チェックログを消費しないため、移行検証後にlive/canary-liveへ切り替えてから本番処理します。
 
 ```bash
 node scripts/nikechan-x.mjs preflight-live
@@ -81,9 +89,11 @@ node scripts/nikechan-x.mjs release-mode --set live --confirm LIVE_X_POSTING
 
 ## Scheduler
 
-VPSではHermes gateway内蔵cronが `/opt/nikechan-x/cron/jobs.json` を読みます。self-tweetは `no_agent: false` のHermes agent jobとして動き、`nikechan-x-self-tweet` skillを読み込んでCLIのguard/pending境界を呼びます。
+VPSではHermes gateway内蔵cronが `/opt/nikechan-x/cron/jobs.json` を読みます。self-tweet / mention-reaction / hashtag-reaction は `no_agent: false` のHermes agent jobとして動き、profile内skillを読み込んでCLIのguard/pending/post境界を呼びます。
 
 通常テキストチャンネルへのcron配送にはHermes標準の「毎回新規thread作成」がないため、候補提示のthread作成だけ `notify-pending --thread` でDiscord APIを使います。thread内の返信処理とsession分離はHermesのDiscord adapterに戻します。
+
+mention-reaction も同じ理由で `notify-mention-pending --thread` が承認threadを作ります。hashtag-reaction は承認待ちを作らず、`hashtag-execute` の結果をcron応答として報告します。
 
 ## Commands
 
