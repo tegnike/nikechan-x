@@ -111,3 +111,29 @@ test('manual post dry-run validates tweet id and records state', async () => {
     await rm(stateDir, { recursive: true, force: true });
   }
 });
+
+test('doctor reports missing credentials without exposing secret values', () => {
+  const env = {
+    ...process.env,
+    SUPABASE_URL: '',
+    SUPABASE_SERVICE_ROLE_KEY: '',
+    XAI_API_KEY: '',
+    X_CONSUMER_KEY: '',
+    X_CONSUMER_SECRET: '',
+    X_ACCESS_TOKEN: '',
+    X_ACCESS_TOKEN_SECRET: '',
+    DISCORD_BOT_TOKEN: '',
+    DISCORD_HOME_CHANNEL: '',
+    DISCORD_ALLOWED_USERS: '',
+  };
+  const result = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'doctor', '--json', '--strict', 'false'], {
+    cwd: join(import.meta.dirname, '..'),
+    env,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.checks.some((check) => check.name === 'env:X_CONSUMER_SECRET' && check.ok === false), true);
+  assert.equal(result.stdout.includes('sb_secret_'), false);
+});

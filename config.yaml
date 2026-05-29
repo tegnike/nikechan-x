@@ -1,8 +1,6 @@
 model:
-  default: gpt-5.3-codex-spark
-  provider: openai-codex
-  base_url: https://chatgpt.com/backend-api/codex
-  api_mode: codex_responses
+  default: grok-3-mini
+  provider: xai
 terminal:
   backend: local
   cwd: /profile

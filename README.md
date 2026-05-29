@@ -57,6 +57,7 @@ node scripts/nikechan-x.mjs propose --source-mode presence --candidates-json '[{
 node scripts/nikechan-x.mjs pending
 node scripts/nikechan-x.mjs approve --ids 1
 node scripts/nikechan-x.mjs cancel --reason "見送り"
+node scripts/nikechan-x.mjs doctor
 ```
 
 記録先:
@@ -65,6 +66,8 @@ node scripts/nikechan-x.mjs cancel --reason "見送り"
 - Supabase best-effort: `tweets`, `twitter_activity_logs`, `twitter_run_state`, `topics`, `local_episodes`
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` の間はX APIを呼びません。`live` / `canary-live` のときだけ投稿します。
+
+`doctor` は非破壊の疎通確認です。Xは `users/me`、DiscordはBotの `users/@me`、Supabaseはreadだけを確認し、秘密値は出力しません。
 
 ## Commands
 

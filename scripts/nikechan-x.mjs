@@ -110,6 +110,9 @@ async function main() {
       case 'state':
         await commandState(readOptions(args));
         break;
+      case 'doctor':
+        await commandDoctor(readOptions(args));
+        break;
       case 'help':
       case undefined:
         printHelp();
@@ -135,6 +138,7 @@ Commands:
   cancel [--reason "..."]
   post --action tweet|reply|quote|retweet --text "..." [--tweet-id id] [--source manual]
   state
+  doctor
 `);
 }
 
@@ -346,6 +350,39 @@ async function commandState(options) {
   printJsonOrMarkdown(state, options);
 }
 
+async function commandDoctor(options) {
+  const checks = [];
+  const requireEnv = (name) => {
+    const ok = Boolean(process.env[name]);
+    checks.push({ name: `env:${name}`, ok });
+    return ok;
+  };
+
+  requireEnv('XAI_API_KEY');
+  requireEnv('X_CONSUMER_KEY');
+  requireEnv('X_CONSUMER_SECRET');
+  requireEnv('X_ACCESS_TOKEN');
+  requireEnv('X_ACCESS_TOKEN_SECRET');
+  requireEnv('SUPABASE_URL');
+  requireEnv('SUPABASE_SERVICE_ROLE_KEY');
+  requireEnv('DISCORD_BOT_TOKEN');
+  requireEnv('DISCORD_HOME_CHANNEL');
+  requireEnv('DISCORD_ALLOWED_USERS');
+
+  checks.push(await checkSupabase());
+  checks.push(await checkXMe());
+  checks.push(await checkDiscordBot());
+
+  const summary = {
+    ok: checks.every((check) => check.ok),
+    releaseMode: releaseMode(),
+    accountName: ACCOUNT_NAME,
+    checks,
+  };
+  printJsonOrMarkdown(summary, options);
+  if (!summary.ok && options.strict !== 'false') process.exitCode = 2;
+}
+
 async function postTweet(input) {
   const mode = releaseMode();
   const action = input.action;
@@ -437,6 +474,52 @@ async function signedFetch(method, url, query = {}, body) {
     throw new Error(`X API failed ${response.status}: ${truncate(text, 500)}`);
   }
   return parsed;
+}
+
+async function checkSupabase() {
+  const result = await supabaseGet('tweets?select=id&limit=1');
+  return {
+    name: 'supabase:read',
+    ok: result.status === 'loaded',
+    status: result.status,
+    code: result.code,
+    reason: result.reason,
+  };
+}
+
+async function checkXMe() {
+  if (!process.env.X_CONSUMER_KEY || !process.env.X_CONSUMER_SECRET || !process.env.X_ACCESS_TOKEN || !process.env.X_ACCESS_TOKEN_SECRET) {
+    return { name: 'x:users/me', ok: false, status: 'missing-env' };
+  }
+  try {
+    const result = await signedFetch('GET', 'https://api.twitter.com/2/users/me');
+    return {
+      name: 'x:users/me',
+      ok: Boolean(result.data?.id),
+      accountId: result.data?.id || null,
+      username: result.data?.username || null,
+    };
+  } catch (error) {
+    return { name: 'x:users/me', ok: false, error: truncate(error.message, 300) };
+  }
+}
+
+async function checkDiscordBot() {
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) return { name: 'discord:bot', ok: false, status: 'missing-env' };
+  try {
+    const response = await fetch('https://discord.com/api/v10/users/@me', {
+      headers: { Authorization: `Bot ${token}` },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      return { name: 'discord:bot', ok: false, code: response.status, body: truncate(text, 300) };
+    }
+    const parsed = text ? JSON.parse(text) : {};
+    return { name: 'discord:bot', ok: Boolean(parsed.id), botId: parsed.id || null, username: parsed.username || null };
+  } catch (error) {
+    return { name: 'discord:bot', ok: false, error: truncate(error.message, 300) };
+  }
 }
 
 function oauthHeader(method, url, credentials) {
