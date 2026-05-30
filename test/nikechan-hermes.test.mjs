@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -556,6 +556,99 @@ test('mention resolve treats reply OK as the only actionable item approval', asy
     assert.equal(resolved.status, 0, resolved.stderr);
     const result = JSON.parse(await readFile(join(stateDir, 'last-mention-reaction-result.json'), 'utf8'));
     assert.deepEqual(result.results.map((entry) => entry.itemId), ['m1']);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('mention propose supersedes old pending and notify does not resend existing thread', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  try {
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, 'pending-mention-reaction.json'), `${JSON.stringify({
+      id: 'old-pending',
+      kind: 'mention-reaction',
+      status: 'needs_approval',
+      createdAt: '2026-05-29T21:11:42.299Z',
+      threadId: '1510027893588234320',
+      threadName: 'Xメンション 2026-05-30 old',
+      notifiedAt: '2026-05-30T07:10:44.126Z',
+      items: [
+        {
+          id: 'm1',
+          tweetLogId: 'old-log',
+          postId: '2060437768220942728',
+          username: 'KuboAvatar',
+          type: 'reply',
+          body: '@ai_nikechan 日々成長！♪',
+          replyAction: 'reply',
+          quoteAction: 'skip',
+          replyText: 'ありがとうございます。',
+          reason: 'old',
+        },
+      ],
+    })}\n`);
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      DISCORD_BOT_TOKEN: '',
+      DISCORD_HOME_CHANNEL: '1509865603714908304',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+
+    const skipped = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'notify-mention-pending', '--thread', '--json'], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(skipped.status, 0, skipped.stderr);
+    assert.equal(JSON.parse(skipped.stdout).skipped, true);
+
+    const context = {
+      candidates: [
+        {
+          id: 'm1',
+          tweetLogId: 'new-log',
+          postId: '2060473822458093742',
+          username: 'darche2',
+          displayName: 'だーしゅ',
+          type: 'reply',
+          body: '@ai_nikechan その場に合わせて変わっていいと思います',
+        },
+      ],
+    };
+    await writeFile(join(stateDir, 'mention-context.json'), `${JSON.stringify(context)}\n`);
+    const items = JSON.stringify({
+      items: [
+        {
+          id: 'm1',
+          tweetLogId: 'new-log',
+          postId: '2060473822458093742',
+          username: 'darche2',
+          displayName: 'だーしゅ',
+          type: 'reply',
+          body: '@ai_nikechan その場に合わせて変わっていいと思います',
+          replyAction: 'reply',
+          quoteAction: 'skip',
+          replyText: 'ありがとうございます。その場に合わせながら、同じ私として返していきます。',
+          reason: '新しい未対応返信への反応',
+        },
+      ],
+    });
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-propose', '--items-json', items], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(proposed.status, 0, proposed.stderr);
+    const pending = JSON.parse(await readFile(join(stateDir, 'pending-mention-reaction.json'), 'utf8'));
+    assert.equal(pending.supersedesPendingId, 'old-pending');
+    assert.equal(pending.items[0].postId, '2060473822458093742');
+    assert.equal(pending.threadId, undefined);
+    const archived = await readdir(stateDir);
+    assert.ok(archived.some((name) => name.includes('superseded-by-new-mention-context')));
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

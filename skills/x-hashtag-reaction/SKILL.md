@@ -11,7 +11,7 @@ HermesはRT/skip判断を担当し、X投稿境界・guard・記録はprofile内
 
 ```bash
 node scripts/nikechan-hermes.mjs hashtag-context
-node scripts/nikechan-hermes.mjs hashtag-execute --items-json '<json>' --notify
+node scripts/nikechan-hermes.mjs hashtag-execute --items-json '<json>' --notify --thread
 ```
 
 ## 方針
@@ -24,7 +24,7 @@ node scripts/nikechan-hermes.mjs hashtag-execute --items-json '<json>' --notify
 - bot系自動投稿、ニケちゃんと直接関係が薄い内容、スパム、不適切な内容はskip
 - メディア取得に失敗している場合は本文と人物文脈だけで保守的に判断する
 - Discordコマンド、チャンネルメンション、内部運用語、secret、private path は出さない
-- 判断後は必ず `hashtag-execute --notify` に渡し、CLIの投稿境界とDiscord報告を通す
+- 判断後は必ず `hashtag-execute --notify --thread` に渡し、CLIの投稿境界とDiscord thread報告を通す
 
 ## 判断JSON
 

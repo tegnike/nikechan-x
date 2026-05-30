@@ -242,7 +242,7 @@ Commands:
   mention-approve --ids m1,m2
   mention-cancel [--reason "..."]
   hashtag-context
-  hashtag-execute --items-json '{"items":[...]}'
+  hashtag-execute --items-json '{"items":[...]}' [--notify] [--thread]
   resolve --text <discord reply> [--notify]
   approve --ids 1,2
   cancel [--reason "..."]
@@ -554,10 +554,14 @@ async function commandNotifyPending(options) {
 
 async function commandMentionContext(options) {
   const candidates = await collectMentionReactionCandidates();
+  const existingPending = await readMentionPending();
   const context = {
     workflow: 'mention-reaction',
     releaseMode: releaseMode(),
     persistOnThisMode: shouldPersistReactionWorkflow(),
+    existingPending: existingPending
+      ? summarizeMentionPendingForContext(existingPending)
+      : null,
     candidates,
     guardPolicy: {
       requireMasterApproval: true,
@@ -569,6 +573,8 @@ async function commandMentionContext(options) {
     instruction: [
       'Read candidates and generate a mention reaction plan.',
       'For each candidate, choose replyAction=reply|skip and quoteAction=quote|skip.',
+      'If candidates is not empty, create a fresh plan from candidates and call mention-propose even when existingPending is present.',
+      'Do not call notify-mention-pending for an existingPending that already has threadId or notifiedAt.',
       'Use candidates[].nickname exactly when naming the author. If nickname is empty, do not call the author by name.',
       'Return JSON only, then call mention-propose with the same items JSON.',
       'Do not call post, reply, quote, retweet, or X API directly.',
@@ -595,7 +601,11 @@ async function commandMentionContext(options) {
     },
   };
   await writeJsonAtomic(statePath('mention-context.json'), context);
-  await recordActivity('source_collect', { count: candidates.length, candidates }, 'mention-reaction', candidates.length ? 'needs_approval' : 'skipped');
+  await recordActivity('source_collect', {
+    count: candidates.length,
+    candidates,
+    existingPending: context.existingPending,
+  }, 'mention-reaction', candidates.length ? 'needs_approval' : 'skipped');
   printJsonOrMarkdown(context, options);
 }
 
@@ -609,6 +619,7 @@ async function commandMentionPropose(options) {
   const candidates = Array.isArray(context?.candidates) ? context.candidates : [];
   const items = normalizeMentionItems(inputItems, candidates);
   if (!items.length) throw new Error('no valid mention items matched current candidates');
+  const previousPending = await readMentionPending();
 
   const pending = {
     id: randomUUID(),
@@ -619,7 +630,11 @@ async function commandMentionPropose(options) {
     items,
     checkedTweetLogIds: candidates.map((candidate) => candidate.tweetLogId).filter(Boolean),
     revisionCount: Number(context?.revisionCount || 0),
+    supersedesPendingId: previousPending?.id || undefined,
   };
+  if (previousPending) {
+    await archiveMentionPending(previousPending, 'superseded-by-new-mention-context');
+  }
   await writeJsonAtomic(statePath('pending-mention-reaction.json'), pending);
   if (shouldPersistReactionWorkflow()) {
     await markTweetLogsChecked(pending.checkedTweetLogIds);
@@ -647,6 +662,23 @@ async function commandNotifyMentionPending(options) {
   if (!pending) throw new Error('no pending mention-reaction');
   const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
   if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
+  if (options.thread && (pending.threadId || pending.notifiedAt) && options.force !== true && options.force !== 'true') {
+    await recordActivity('notify_skipped', {
+      pendingId: pending.id,
+      channel,
+      threadId: pending.threadId || null,
+      reason: 'already-notified',
+    }, 'mention-reaction', 'needs_approval');
+    printJsonOrMarkdown({
+      ok: true,
+      skipped: true,
+      reason: 'already-notified',
+      channel,
+      threadId: pending.threadId || null,
+      messageId: pending.messageId || null,
+    }, options);
+    return;
+  }
   const content = [
     'Xメンション反応候補です。このスレッドで「全部OK」「1だけ」「修正: ...」「見送り」のように返信してください。',
     '',
@@ -816,7 +848,15 @@ async function commandHashtagExecute(options) {
   const report = formatHashtagReport(items, result.results);
   if (options.notify === true || options.notify === 'true') {
     const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
-    if (channel) await sendDiscordMessage(channel, report);
+    if (channel) {
+      if (options.thread === true || options.thread === 'true') {
+        await sendDiscordThreadReport(channel, report, {
+          threadTitle: options.threadTitle || `Xハッシュタグ ${jstDate()}`,
+        });
+      } else {
+        await sendDiscordMessage(channel, report);
+      }
+    }
   }
   console.log(report);
 }
@@ -2252,10 +2292,38 @@ async function setMentionPendingThread(pending, thread) {
   return next;
 }
 
+function summarizeMentionPendingForContext(pending) {
+  return {
+    id: pending.id || null,
+    status: pending.status || null,
+    createdAt: pending.createdAt || null,
+    notifiedAt: pending.notifiedAt || null,
+    threadId: pending.threadId || null,
+    threadName: pending.threadName || null,
+    itemCount: Array.isArray(pending.items) ? pending.items.length : 0,
+    postIds: Array.isArray(pending.items)
+      ? pending.items.map((item) => item.postId).filter(Boolean)
+      : [],
+  };
+}
+
 async function removePending() {
   const path = statePath('pending-self-tweet.json');
   if (!existsSync(path)) return;
   await rename(path, statePath(`pending-self-tweet.${Date.now()}.closed.json`));
+}
+
+async function archiveMentionPending(pending, reason) {
+  const path = statePath('pending-mention-reaction.json');
+  if (!existsSync(path)) return;
+  const archived = {
+    ...pending,
+    status: reason,
+    archivedAt: new Date().toISOString(),
+    archiveReason: reason,
+  };
+  await writeJsonAtomic(statePath(`pending-mention-reaction.${Date.now()}.${reason}.json`), archived);
+  await rename(path, statePath(`pending-mention-reaction.${Date.now()}.closed.json`));
 }
 
 async function removeMentionPending() {
@@ -2346,6 +2414,23 @@ async function sendPendingThread(channel, pending, content, options = {}) {
   }
   const title = sanitizeDiscordThreadName(
     options.threadTitle || `X候補 ${jstDate()} ${pending.id.slice(0, 8)}`,
+  );
+  const thread = await createDiscordThread(channel, title);
+  if (thread.id) {
+    await addConfiguredDiscordThreadMembers(thread.id);
+  }
+  const message = await sendDiscordMessage(thread.id, content);
+  return {
+    ...thread,
+    messageId: message.id || null,
+    threadId: thread.id || null,
+    threadName: thread.name || title,
+  };
+}
+
+async function sendDiscordThreadReport(channel, content, options = {}) {
+  const title = sanitizeDiscordThreadName(
+    options.threadTitle || `Xレポート ${jstDate()}`,
   );
   const thread = await createDiscordThread(channel, title);
   if (thread.id) {

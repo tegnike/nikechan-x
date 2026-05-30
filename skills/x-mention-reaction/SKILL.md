@@ -31,7 +31,9 @@ node scripts/nikechan-hermes.mjs mention-cancel --reason "<理由>"
 - Discordコマンド、チャンネルメンション、内部運用語、secret、private path は出さない
 - 候補生成後は必ず `mention-propose` に渡し、guardとpending保存を通す
 - cron実行時は `mention-propose` 後に `notify-mention-pending --thread` を実行し、最終応答は `[SILENT]` にする
-- 既存pendingがある場合は新規候補を作らず、必要なら `notify-mention-pending --thread` だけ行って `[SILENT]` にする
+- `mention-context` の `candidates` が空で、既存pendingだけがある場合は何も通知せず `[SILENT]` にする
+- `mention-context` の `candidates` がある場合は、既存pendingがあっても必ず新しい候補を作って `mention-propose` に渡す。CLIが古いpendingをsupersededとして退避する
+- `existingPending.threadId` または `existingPending.notifiedAt` がある既存pendingに対して、`notify-mention-pending --thread` だけを再実行しない
 
 ## 候補JSON
 

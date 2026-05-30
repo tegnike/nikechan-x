@@ -90,7 +90,7 @@
     {
       "id": "x-hashtag-reaction-live-v1",
       "name": "x-hashtag-reaction-live",
-      "prompt": "profiles/nikechan-x のX profileでハッシュタグ反応を実行してください。profile内CLIで未チェック#AIニケちゃん候補を読み、RT/skipを判断し、hashtag-execute --notify を通して結果をDiscordへ報告してください。CLI通知に任せ、最終応答は [SILENT] にしてください。",
+      "prompt": "profiles/nikechan-x のX profileでハッシュタグ反応を実行してください。profile内CLIで未チェック#AIニケちゃん候補を読み、RT/skipを判断し、hashtag-execute --notify --thread を通して結果をDiscord threadへ報告してください。CLI通知に任せ、最終応答は [SILENT] にしてください。",
       "skills": ["x-hashtag-reaction"],
       "skill": "x-hashtag-reaction",
       "model": null,
