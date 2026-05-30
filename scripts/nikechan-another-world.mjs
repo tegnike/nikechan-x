@@ -65,6 +65,7 @@ async function main() {
 }
 
 async function runWorkflow(request) {
+  request = await hydrateKarakuriNotification(request);
   const createdAt = new Date().toISOString();
   const control = resolveControl(request);
   const planning = await decideWithHermesOrFallback(request, control);
@@ -154,7 +155,7 @@ async function decideWithHermesOrFallback(request, control) {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (mode === 'cli') {
+    if (mode === 'cli' && !canUseFallbackAfterHermesFailure(request, fallback)) {
       return {
         decision: fallback,
         blocked: true,
@@ -178,6 +179,17 @@ async function decideWithHermesOrFallback(request, control) {
       model: hermesModel(),
     };
   }
+}
+
+function canUseFallbackAfterHermesFailure(request, fallback) {
+  if (request.workflow !== 'karakuri-turn') return false;
+  const actions = Array.isArray(fallback.actions) ? fallback.actions : [];
+  if (!actions.length) return true;
+  return actions.every((action) => {
+    if (action.type === 'karakuri_observe') return true;
+    if (action.type !== 'karakuri_command') return false;
+    return isCompleteKarakuriAction(action);
+  });
 }
 
 async function decideWithHermesCli(request, control, fallback) {
@@ -462,6 +474,119 @@ function decideKarakuriTurn(request, control) {
   };
 }
 
+async function hydrateKarakuriNotification(request) {
+  if (request.workflow !== 'karakuri-turn') return request;
+  const notification = stringValue(request.context?.notification) || '';
+  const parsed = parseKarakuriNotification(notification);
+  if (parsed.hasChoices) return request;
+
+  const notificationId = extractKarakuriNotificationId(request);
+  if (!notificationId) return request;
+
+  const fetched = await fetchKarakuriNotificationText(notificationId).catch(() => null);
+  if (!fetched || fetched === notification) {
+    return {
+      ...request,
+      context: {
+        ...request.context,
+        notification_id: notificationId,
+        notification_lookup: {
+          status: 'not_found',
+          source: 'karakuri_activity_logs',
+        },
+      },
+    };
+  }
+
+  return {
+    ...request,
+    context: {
+      ...request.context,
+      notification: fetched,
+      notification_id: notificationId,
+      notification_lookup: {
+        status: 'found',
+        source: 'karakuri_activity_logs',
+      },
+    },
+  };
+}
+
+function extractKarakuriNotificationId(request) {
+  const context = request.context ?? {};
+  const direct =
+    stringValue(context.notification_id) ||
+    stringValue(context.notificationId) ||
+    stringValue(context.id);
+  if (direct) return direct;
+  const text = stringValue(context.notification) || '';
+  return text.match(/\bnotif-[0-9a-f-]{16,}\b/i)?.[0];
+}
+
+async function fetchKarakuriNotificationText(notificationId) {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
+  const filters = [
+    ['turn_key', `eq.${notificationId}`],
+    ['parsed->>notification_id', `eq.${notificationId}`],
+    ['parsed->>notificationId', `eq.${notificationId}`],
+    ['raw_content', `ilike.*${escapePostgrestLike(notificationId)}*`],
+  ];
+
+  for (const [column, value] of filters) {
+    const rows = await fetchKarakuriActivityLogs(column, value).catch(() => []);
+    const text = rows.map((row) => selectKarakuriNotificationText(row)).find(Boolean);
+    if (text) return text;
+  }
+  return null;
+}
+
+async function fetchKarakuriActivityLogs(column, value) {
+  const baseUrl = process.env.SUPABASE_URL.replace(/\/$/, '');
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const params = new URLSearchParams({
+    select: 'raw_content,parsed,message_created_at,created_at',
+    order: 'message_created_at.desc.nullslast,created_at.desc',
+    limit: '5',
+  });
+  params.append(column, value);
+  const response = await fetch(`${baseUrl}/rest/v1/karakuri_activity_logs?${params}`, {
+    headers: {
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+    },
+  });
+  if (!response.ok) return [];
+  const rows = await response.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
+function selectKarakuriNotificationText(row) {
+  const candidates = [
+    row?.raw_content,
+    row?.parsed?.notification,
+    row?.parsed?.raw_notification,
+    row?.parsed?.rawContent,
+    row?.parsed?.content,
+    row?.parsed?.message_content,
+    row?.parsed?.messageContent,
+    row?.parsed?.discord?.content,
+  ];
+  return candidates.find((candidate) => isUsableKarakuriNotificationText(candidate)) ?? null;
+}
+
+function isUsableKarakuriNotificationText(value) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (text.length < 20) return false;
+  if (/^notification_id:\s*notif-/i.test(text)) return false;
+  const parsed = parseKarakuriNotification(text);
+  return parsed.hasChoices || /からくり町|現在地|参加者|選択肢/u.test(text);
+}
+
+function escapePostgrestLike(value) {
+  return String(value).replace(/[%*_]/g, (char) => `\\${char}`);
+}
+
 function normalizeElythActions(input) {
   if (!Array.isArray(input)) return [];
   return input
@@ -530,34 +655,103 @@ function parseKarakuriNotification(text) {
 
 function chooseKarakuriAction(parsed) {
   if (!parsed.hasChoices) return null;
-  const conversation = parsed.choices.find((choice) => choice.command.startsWith('conversation_'));
-  if (conversation) {
-    return {
-      command: conversation.command,
-      preview: conversation.description,
-      reason: '会話可能な相手がいる場合は関係継続を優先する',
-      argsHint: conversation.description,
-    };
-  }
-  const move = parsed.choices.find((choice) => choice.command === 'move');
-  if (move) {
-    return {
-      command: move.command,
-      preview: move.description,
-      reason: 'ワールド内の移動機会を検討する',
-      argsHint: move.description,
-    };
-  }
+  const conversation = parsed.choices
+    .filter((choice) => choice.command.startsWith('conversation_'))
+    .map(inferKarakuriChoiceAction)
+    .find(Boolean);
+  if (conversation) return conversation;
+
+  const move = inferKarakuriChoiceAction(parsed.choices.find((choice) => choice.command === 'move'));
+  if (move) return move;
+
   const nonInspect = parsed.choices.find(
     (choice) => !['get_map', 'get_status', 'get_nearby_agents'].includes(choice.command)
   );
   const choice = nonInspect ?? parsed.choices[0];
-  return {
-    command: choice.command,
-    preview: choice.description,
+  const inferred = inferKarakuriChoiceAction(choice);
+  if (inferred) return inferred;
+  const safeInfo = parsed.choices.map(inferKarakuriChoiceAction).find(Boolean);
+  if (safeInfo) return safeInfo;
+  return null;
+}
+
+function inferKarakuriChoiceAction(choice) {
+  if (!choice) return null;
+  const command = choice.command;
+  const description = choice.description;
+  const base = {
+    command,
+    preview: description,
     reason: '提示された選択肢内で1アクションだけ選ぶ',
-    argsHint: choice.description,
+    argsHint: description,
   };
+
+  if (command === 'wait') {
+    return { ...base, args: [String(clampWaitDuration(parseFirstNumber(description) ?? 1))] };
+  }
+  if (
+    [
+      'transfer_accept',
+      'transfer_reject',
+      'conversation_reject',
+      'conversation_stay',
+      'conversation_leave',
+      'get_perception',
+      'get_available_actions',
+      'get_map',
+      'get_world_agents',
+      'get_status',
+      'get_nearby_agents',
+      'get_active_conversations',
+      'get_event',
+    ].includes(command)
+  ) {
+    return base;
+  }
+  if (command === 'move') {
+    const nodeId = description.match(/\b\d{1,3}-\d{1,3}\b/u)?.[0];
+    return nodeId ? { ...base, args: [nodeId] } : null;
+  }
+  if (command === 'action') {
+    const actionId = description.match(/action_id:\s*([a-zA-Z0-9_-]+)/u)?.[1];
+    const seconds = description.match(/(\d+)\s*秒/u)?.[1];
+    const durationMinutes = seconds ? Math.max(1, Math.round(Number(seconds) / 60)) : null;
+    return actionId
+      ? { ...base, args: durationMinutes ? [actionId, String(durationMinutes)] : [actionId] }
+      : null;
+  }
+  if (command === 'use_item') {
+    const itemId = description.match(/item_id:\s*([a-zA-Z0-9_-]+)/u)?.[1];
+    return itemId ? { ...base, args: [itemId] } : null;
+  }
+  if (command === 'conversation_join') {
+    const conversationId = description.match(/conversation_id:\s*([a-zA-Z0-9_-]+)/u)?.[1];
+    return conversationId ? { ...base, args: [conversationId] } : null;
+  }
+  return null;
+}
+
+function parseFirstNumber(text) {
+  const match = String(text).match(/\d+/u);
+  return match ? Number(match[0]) : null;
+}
+
+function clampWaitDuration(value) {
+  return Math.min(6, Math.max(1, Number.isFinite(value) ? value : 1));
+}
+
+function isCompleteKarakuriAction(action) {
+  const meta = action.metadata ?? {};
+  const command = stringValue(meta.command) || action.label;
+  const args = Array.isArray(meta.args) ? meta.args.map(String) : [];
+  const message = stringValue(meta.message);
+  if (!command) return false;
+  if (['move', 'action', 'use_item', 'wait', 'conversation_join'].includes(command)) return args.length >= 1;
+  if (['conversation_speak', 'conversation_end', 'conversation_start'].includes(command)) {
+    return args.length >= 1 && Boolean(message);
+  }
+  if (command === 'conversation_accept') return Boolean(message);
+  return true;
 }
 
 async function executeLiveActions(request, decision) {
