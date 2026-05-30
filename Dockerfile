@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y \
       > /usr/local/lib/python3.11/dist-packages/plugins/platforms/discord/plugin.yaml \
     && rm -rf /var/lib/apt/lists/*
 
+COPY patches/hermes-agent/cron-error-deliver.py /tmp/cron-error-deliver.py
+RUN python3 /tmp/cron-error-deliver.py && rm /tmp/cron-error-deliver.py
+
 COPY docker-entrypoint.sh /usr/local/bin/nikechan-hermes-entrypoint
 RUN chmod +x /usr/local/bin/nikechan-hermes-entrypoint
 
