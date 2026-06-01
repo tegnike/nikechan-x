@@ -26,9 +26,9 @@ node scripts/nikechan-hermes.mjs preflight-live
 - public-safeな近況、公開済み投稿、公開記事、X上の現在文脈だけを材料にする
 - secret、内部ログ、privateな人物文脈、未公開作業内容を混ぜない
 - 候補は短く、Xで単体で読める文にする
-- cron実行時はHermes agent jobとして動く。通知後の最終応答は `[SILENT]` にして、Hermes cronの通常配送で重複通知しない
-- cron実行時は最初に `state --json` を確認する。既存pendingに `threadId` がある場合は新規候補も新規threadも作らず `[SILENT]` を返す
-- 既存pendingがあり `threadId` がない場合だけ `notify-pending --thread` でthread化し、`[SILENT]` を返す
+- cron実行時はHermes agent jobとして動く。候補提示は `notify-pending --thread` に任せ、最終応答は `[SILENT]` にしてHermes cronの通常配送で重複通知しない
+- cron実行時も既存pendingの有無だけで止まらない。毎回 `context` を読み、新しい候補を作って `propose` に渡す
+- 既存pendingがある場合、通常の新規cronでは `--preserve-thread` を使わず、新しいpending/threadとして提示する
 - 候補生成前に必ず `context` を読む
 - `context.materials.primary` を主材料にする。`context.materials.supporting` は補助だけに使う
 - `context.duplicateReference` に近い話題・言い回しは作らない。禁止リスト管理ではなく、その場の重複参照として扱う
