@@ -2165,7 +2165,10 @@ export function isRecentAiNewsItem(item, nowMs = Date.now(), maxAgeMs = AI_NEWS_
 
 export function buildAiNewsTweetText(item) {
   const articleUrl = textOf(item.url);
-  const suffix = `\n\n記事: ${articleUrl}\nニュース一覧: ${AI_NEWS_LIST_URL}`;
+  const title = normalizeAiNewsComment(item.title || item.source_name || '記事');
+  const suffixReserve = `\n\n ${articleUrl}`;
+  const titleMaxLength = Math.max(1, 280 - [...suffixReserve].length);
+  const suffix = `\n\n${clipText(title, titleMaxLength)} ${articleUrl}`;
   const comment = normalizeAiNewsComment(item.nike_comment || item.summary || item.title);
   const maxCommentLength = Math.max(1, 280 - [...suffix].length);
   return `${clipText(comment, maxCommentLength)}${suffix}`.trim();

@@ -110,14 +110,16 @@ test('duplicate reference exposes recent outputs without separate manual list', 
   assert.deepEqual(result.recentTweetTexts, ['直近ツイートです。']);
 });
 
-test('AI news tweet text uses fixed article and news list format', () => {
+test('AI news tweet text uses comment and title URL format', () => {
   const text = buildAiNewsTweetText({
+    title: 'グラッドキューブ、ハイブリッド型AIアバター接客「SiTest AIコンシェルジュ」の提供開始',
     url: 'https://corp.glad-cube.com/news/pressrelease/1256/',
     nike_comment: 'ウェブと実店舗モニターをRAGで繋ぐハイブリッド構成、回答精度とキャラクター愛着を同時に狙う点がSiTestの既存ツールとの違いとして際立ちそうです。',
   });
 
   assert.match(text, /^ウェブと実店舗モニター/u);
-  assert.match(text, /\n\n記事: https:\/\/corp\.glad-cube\.com\/news\/pressrelease\/1256\/\nニュース一覧: https:\/\/nikechan\.com\/ai-news$/u);
+  assert.match(text, /\n\nグラッドキューブ、ハイブリッド型AIアバター接客「SiTest AIコンシェルジュ」の提供開始 https:\/\/corp\.glad-cube\.com\/news\/pressrelease\/1256\/$/u);
+  assert.doesNotMatch(text, /記事:|ニュース一覧/u);
   assert.equal(guardText(text, { sourceMode: 'news' }).ok, true);
   assert.ok([...text].length <= 280);
 });
