@@ -174,6 +174,9 @@ async function main() {
       case 'notify-mention-pending':
         await commandNotifyMentionPending(readOptions(args));
         break;
+      case 'thread-context':
+        await commandThreadContext(readOptions(args));
+        break;
       case 'mention-resolve':
         await commandMentionResolve(readOptions(args));
         break;
@@ -238,6 +241,7 @@ Commands:
   mention-context
   mention-propose --items-json '{"items":[...]}'
   notify-mention-pending [--channel <discord_channel_id>] [--thread]
+  thread-context --thread-id <discord_thread_id>
   mention-resolve --text <discord reply> [--notify]
   mention-approve --ids m1,m2
   mention-cancel [--reason "..."]
@@ -470,6 +474,17 @@ async function commandPropose(options) {
       createdAt: new Date().toISOString(),
     };
   });
+  const previousPending = await readPending();
+  const preserveThread = options.preserveThread === true || options.preserveThread === 'true';
+  const threadState = preserveThread && previousPending?.threadId
+    ? {
+      channel: previousPending.channel || undefined,
+      messageId: previousPending.messageId || undefined,
+      threadId: previousPending.threadId,
+      threadName: previousPending.threadName || undefined,
+      notifiedAt: previousPending.notifiedAt || new Date().toISOString(),
+    }
+    : {};
   const pending = {
     id: randomUUID(),
     kind: 'self-tweet',
@@ -478,6 +493,8 @@ async function commandPropose(options) {
     createdAt: new Date().toISOString(),
     candidates: items,
     feedback: options.feedback || '',
+    supersedesPendingId: previousPending?.id || undefined,
+    ...threadState,
   };
   await writeJsonAtomic(statePath('pending-self-tweet.json'), pending);
   await recordActivity('present', {
@@ -576,6 +593,8 @@ async function commandMentionContext(options) {
       'If candidates is not empty, create a fresh plan from candidates and call mention-propose even when existingPending is present.',
       'Do not call notify-mention-pending for an existingPending that already has threadId or notifiedAt.',
       'Use candidates[].nickname exactly when naming the author. If nickname is empty, do not call the author by name.',
+      'Write reason, replyText, and quoteText in Japanese.',
+      'Copy body and originalTweetText exactly from the matching candidate; do not summarize or translate them.',
       'Return JSON only, then call mention-propose with the same items JSON.',
       'Do not call post, reply, quote, retweet, or X API directly.',
     ],
@@ -588,12 +607,12 @@ async function commandMentionContext(options) {
           username: 'author username',
           displayName: 'author display name',
           type: 'reply|quote|mention|tweet',
-          body: 'tweet body',
+          body: 'exact candidate body; do not summarize or translate',
           originalTweetId: 'optional',
           originalTweetText: 'optional',
           replyAction: 'reply|skip',
           quoteAction: 'quote|skip',
-          reason: 'short public-safe reason',
+          reason: 'short public-safe reason in Japanese',
           replyText: 'required when replyAction=reply',
           quoteText: 'required when quoteAction=quote',
         },
@@ -621,6 +640,16 @@ async function commandMentionPropose(options) {
   if (!items.length) throw new Error('no valid mention items matched current candidates');
   const previousPending = await readMentionPending();
 
+  const preserveThread = options.preserveThread === true || options.preserveThread === 'true';
+  const threadState = preserveThread && previousPending?.threadId
+    ? {
+      channel: previousPending.channel || undefined,
+      messageId: previousPending.messageId || undefined,
+      threadId: previousPending.threadId,
+      threadName: previousPending.threadName || undefined,
+      notifiedAt: previousPending.notifiedAt || new Date().toISOString(),
+    }
+    : {};
   const pending = {
     id: randomUUID(),
     kind: 'mention-reaction',
@@ -631,6 +660,7 @@ async function commandMentionPropose(options) {
     checkedTweetLogIds: candidates.map((candidate) => candidate.tweetLogId).filter(Boolean),
     revisionCount: Number(context?.revisionCount || 0),
     supersedesPendingId: previousPending?.id || undefined,
+    ...threadState,
   };
   if (previousPending) {
     await archiveMentionPending(previousPending, 'superseded-by-new-mention-context');
@@ -645,6 +675,13 @@ async function commandMentionPropose(options) {
     checkedTweetLogIds: shouldPersistReactionWorkflow() ? pending.checkedTweetLogIds : [],
   }, 'mention-reaction', 'needs_approval');
   printMentionPendingMarkdown(pending);
+}
+
+async function commandThreadContext(options) {
+  const threadId = required(options.threadId || options['thread-id'], '--thread-id');
+  const context = await findPendingByThreadId(threadId);
+  printJsonOrMarkdown(context, options);
+  if (!context.match && options.strict !== 'false') process.exitCode = 2;
 }
 
 async function commandMentionPending(options) {
@@ -1370,9 +1407,9 @@ function normalizeMentionItems(inputItems, candidates) {
       username: String(item.username || candidate.username),
       displayName: String(item.displayName || candidate.displayName),
       type: String(item.type || candidate.type || 'mention'),
-      body: String(item.body || candidate.body),
-      originalTweetId: item.originalTweetId ? String(item.originalTweetId) : candidate.originalTweetId,
-      originalTweetText: item.originalTweetText ? String(item.originalTweetText) : candidate.originalTweetText,
+      body: String(candidate.body || item.body || ''),
+      originalTweetId: candidate.originalTweetId || (item.originalTweetId ? String(item.originalTweetId) : undefined),
+      originalTweetText: candidate.originalTweetText || (item.originalTweetText ? String(item.originalTweetText) : undefined),
       replyAction: item.replyAction === 'reply' && guardedReplyText && replyGuard.ok ? 'reply' : 'skip',
       quoteAction: item.quoteAction === 'quote' && guardedQuoteText && quoteGuard.ok ? 'quote' : 'skip',
       reason: String(item.reason || 'AI判定'),
@@ -2290,6 +2327,57 @@ async function setMentionPendingThread(pending, thread) {
   };
   await writeJsonAtomic(statePath('pending-mention-reaction.json'), next);
   return next;
+}
+
+async function findPendingByThreadId(threadId) {
+  const normalized = String(threadId || '').trim();
+  const [selfTweet, mentionReaction] = await Promise.all([
+    readPending(),
+    readMentionPending(),
+  ]);
+  if (mentionReaction?.threadId && String(mentionReaction.threadId) === normalized) {
+    return {
+      match: true,
+      workflow: 'mention-reaction',
+      command: 'mention',
+      pending: mentionReaction,
+      routingInstruction: [
+        'This Discord thread is an X mention-reaction approval/revision thread.',
+        'Use the current pending candidates below as the source of truth.',
+        'Do not execute self-tweet pending from this thread.',
+        'Judge the master reply by intent, not by fixed approval words.',
+        'If the reply approves the current candidates, call mention-approve with the selected item IDs.',
+        'If the reply asks for changes, revise the full items JSON and call mention-propose --preserve-thread true.',
+        'If the reply asks a question or asks to review context, answer briefly and keep the pending state.',
+      ],
+    };
+  }
+  if (selfTweet?.threadId && String(selfTweet.threadId) === normalized) {
+    return {
+      match: true,
+      workflow: 'self-tweet',
+      command: 'self',
+      pending: selfTweet,
+      routingInstruction: [
+        'This Discord thread is an X self-tweet approval/revision thread.',
+        'Use the current pending candidates below as the source of truth.',
+        'Do not execute mention-reaction pending from this thread.',
+        'Judge the master reply by intent, not by fixed approval words.',
+        'If the reply approves a candidate, call approve with the selected candidate IDs.',
+        'If the reply asks for changes, revise candidates and call propose --preserve-thread true.',
+        'If the reply asks a question or asks to review context, answer briefly and keep the pending state.',
+      ],
+    };
+  }
+  return {
+    match: false,
+    workflow: null,
+    threadId: normalized,
+    pendingThreads: {
+      mentionReaction: mentionReaction?.threadId || null,
+      selfTweet: selfTweet?.threadId || null,
+    },
+  };
 }
 
 function summarizeMentionPendingForContext(pending) {

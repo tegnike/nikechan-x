@@ -26,6 +26,8 @@ node scripts/nikechan-hermes.mjs mention-cancel --reason "<理由>"
 - `mention-context.candidates[].personContext` は公開可能な投影だけとして扱う
 - 相手を名前で呼ぶ場合は `nickname` だけをそのまま使う
 - `nickname` が空の場合は相手を名前で呼ばない
+- `body` と `originalTweetText` は `mention-context.candidates[]` の原文をそのまま使い、要約・翻訳しない
+- `reason` / `replyText` / `quoteText` は必ず日本語で書く
 - 返信と引用RTは別軸で判断するが、過剰反応は避ける
 - 不適切、文脈不足、内輪の運用品質指摘、反応不要なものは skip
 - Discordコマンド、チャンネルメンション、内部運用語、secret、private path は出さない
@@ -49,32 +51,45 @@ node scripts/nikechan-hermes.mjs mention-cancel --reason "<理由>"
       "username": "username",
       "displayName": "表示名",
       "type": "reply",
-      "body": "相手の本文",
+      "body": "相手の本文を原文コピー（要約・翻訳禁止）",
       "originalTweetId": "元ツイートID。なければ省略",
-      "originalTweetText": "元ツイート本文。なければ省略",
+      "originalTweetText": "元ツイート本文を原文コピー。なければ省略",
       "replyAction": "reply",
       "quoteAction": "skip",
-      "reason": "判断理由",
-      "replyText": "返信本文"
+      "reason": "日本語の判断理由",
+      "replyText": "日本語の返信本文"
     }
   ]
 }
 ```
 
-## 承認時
+## Discord承認・修正thread
 
-マスターが「全部OK」「1だけ」「m1で」「リプして」など明確に承認した場合だけ:
+候補thread内のマスター返信は、固定文言ではなくLLM判断で扱う。
+
+- 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認として扱う
+- 番号や `m1` / `m2` 指定があれば該当候補だけ、指定がなければ現在提示中の実行対象を承認する
+- 承認時は `node scripts/nikechan-hermes.mjs mention-approve --ids m1,m2` を実行し、結果を短く報告する
+- 「ここをこう変えて」「もう少し柔らかく」「この文だけ直して」などは修正指示として扱う
+- 修正時は現在の `pending.items` と `pending.candidates` を元に全候補JSONを作り直し、`node scripts/nikechan-hermes.mjs mention-propose --preserve-thread true --items-json '<json>'` を実行する
+- 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持する
+- メンション反応threadでは self-tweet pending を実行しない
+- Discordへの返答では、内部コマンド、pending ID、`needs_approval`、JSON、実行ログを通常は出さない。マスターがログ確認を求めた場合だけ最小限に出す
+- 修正後は「了解しました。では雰囲気を変えて以下のような案でどうでしょう。」のような自然な短文と、変更後の候補本文だけを返す
+- 承認・投稿後は投稿済みURLだけを簡潔に返す
+
+補助コマンド:
 
 ```bash
-node scripts/nikechan-hermes.mjs mention-resolve --text "全部OK" --notify
+node scripts/nikechan-hermes.mjs thread-context --thread-id "<Discord thread id>"
+node scripts/nikechan-hermes.mjs mention-resolve --text "<Discord返信本文>" --notify
 ```
 
-- 承認返信を受けたら、追加調査・`pwd`/`ls`・ファイル閲覧・`node -e`・`python -c`・heredoc実行は行わず、上記の `mention-resolve` だけを実行する
-- `mention-resolve` の結果が完了なら、その結果を短く報告して終了する
+`mention-resolve` は補助用。thread返信の主判断はLLMが行い、承認なら `mention-approve`、修正なら `mention-propose --preserve-thread true` を直接使う。
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` ではX API投稿も `tweet_logs` 消費も行わない。
 `live` または `canary-live` かつ `NIKECHAN_X_LIVE_ARMED=yes` のときだけ、投稿・checked更新・action記録・contact episode記録を行う。
 
 ## 修正時
 
-`mention-resolve` が `revise` を返したら、保存された `mention-context` の `currentItems` と `feedback` を読み、全候補を作り直して `mention-propose` に渡す。
+保存された `mention-context` または thread router から渡された `pending` の `currentItems` / `items` と `feedback` を読み、全候補を作り直して `mention-propose --preserve-thread true` に渡す。

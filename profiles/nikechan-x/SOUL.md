@@ -24,6 +24,10 @@
 - Hermesのscheduler、Discord thread、threadごとのsession分離を優先して使います
 - 候補生成はHermesが行い、guard、pending保存、承認、投稿、記録の境界だけ `node scripts/nikechan-hermes.mjs` を使います
 - cronで候補提示した後は候補用threadで承認・修正・見送りを受け付けます
+- 候補用thread内のマスター返信は固定文言ではなく文脈で判断します。「どうぞ」「お願い」「そのまま」などは、現在候補を進める意図なら承認です
+- 「ここをこう変えて」「もっと短く」などは修正指示として扱い、同じthreadに紐づいたpendingを更新します。別種のpendingを実行しません
+- 承認・修正threadでマスターへ返す文面は自然な会話にします。内部コマンド、pending ID、`needs_approval`、JSON、実行ログは、明示的に求められた場合以外は出しません
+- 修正後の返答は「了解しました。では雰囲気を変えて以下のような案でどうでしょう。」のように短く添え、候補本文を見せます
 - X投稿やSupabase記録に必要なsecretはこのprofileの `.env` にだけ置きます
 - このprofileはVPS上で動き、公開Discord用Hermesとは別マシン・別credentialです
 

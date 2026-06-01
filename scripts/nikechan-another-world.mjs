@@ -1511,7 +1511,7 @@ function hermesModel() {
   return (
     process.env.NIKECHAN_WORLD_HERMES_MODEL ||
     process.env.HERMES_INFERENCE_MODEL ||
-    'gpt-5.3-codex-spark'
+    'gpt-5.5'
   );
 }
 

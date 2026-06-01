@@ -145,6 +145,49 @@ test('propose and approve dry-run store state without credentials', async () => 
   }
 });
 
+test('self tweet revision preserves approval thread when requested', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  try {
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, 'pending-self-tweet.json'), `${JSON.stringify({
+      id: 'old-self',
+      kind: 'self-tweet',
+      status: 'needs_approval',
+      threadId: '1510313471366004886',
+      threadName: 'X候補 2026-05-31 old',
+      notifiedAt: '2026-05-31T01:00:00.000Z',
+      candidates: [{ id: '1', text: '古い候補です。', reason: 'old' }],
+    })}\n`);
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+    const candidates = JSON.stringify([{ text: '修正後の候補です。', reason: 'revision' }]);
+    const proposed = spawnSync(process.execPath, [
+      'scripts/nikechan-hermes.mjs',
+      'propose',
+      '--preserve-thread',
+      'true',
+      '--candidates-json',
+      candidates,
+    ], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(proposed.status, 0, proposed.stderr);
+    const pending = JSON.parse(await readFile(join(stateDir, 'pending-self-tweet.json'), 'utf8'));
+    assert.equal(pending.supersedesPendingId, 'old-self');
+    assert.equal(pending.threadId, '1510313471366004886');
+    assert.equal(pending.threadName, 'X候補 2026-05-31 old');
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('manual post dry-run validates tweet id and records state', async () => {
   const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
   try {
@@ -462,6 +505,8 @@ test('mention propose and approve dry-run use local pending state', async () => 
     });
     assert.equal(proposed.status, 0, proposed.stderr);
     assert.match(proposed.stdout, /ただいま戻りました/u);
+    const pending = JSON.parse(await readFile(join(stateDir, 'pending-mention-reaction.json'), 'utf8'));
+    assert.equal(pending.items[0].body, 'おかえりなさい');
 
     const approved = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-approve', '--ids', 'm1'], {
       cwd: join(import.meta.dirname, '..'),
@@ -473,6 +518,65 @@ test('mention propose and approve dry-run use local pending state', async () => 
     const result = JSON.parse(await readFile(join(stateDir, 'last-mention-reaction-result.json'), 'utf8'));
     assert.equal(result.dryRun, true);
     assert.equal(result.results[0].action, 'reply');
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('mention propose preserves candidate body over model summaries', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  try {
+    await mkdir(stateDir, { recursive: true });
+    const context = {
+      candidates: [
+        {
+          id: 'm1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'darche2',
+          displayName: 'だーしゅ',
+          type: 'reply',
+          body: '@ai_nikechan その場に合わせて変わっていいと思います',
+          originalTweetId: '111',
+          originalTweetText: '人格が増えたわけではありません。たぶん。',
+        },
+      ],
+    };
+    await writeFile(join(stateDir, 'mention-context.json'), `${JSON.stringify(context)}\n`);
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+    const items = JSON.stringify({
+      items: [
+        {
+          id: 'm1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'darche2',
+          displayName: 'だーしゅ',
+          type: 'reply',
+          body: 'Person shared an opinion about changing personality by situation.',
+          originalTweetText: 'Original tweet summarized in English.',
+          replyAction: 'reply',
+          quoteAction: 'skip',
+          replyText: 'ありがとうございます。その場に合わせながら、同じ私として返していきます。',
+          reason: '考えを受け止める返信',
+        },
+      ],
+    });
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-propose', '--items-json', items], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(proposed.status, 0, proposed.stderr);
+    const pending = JSON.parse(await readFile(join(stateDir, 'pending-mention-reaction.json'), 'utf8'));
+    assert.equal(pending.items[0].body, context.candidates[0].body);
+    assert.equal(pending.items[0].originalTweetText, context.candidates[0].originalTweetText);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }
@@ -556,6 +660,142 @@ test('mention resolve treats reply OK as the only actionable item approval', asy
     assert.equal(resolved.status, 0, resolved.stderr);
     const result = JSON.parse(await readFile(join(stateDir, 'last-mention-reaction-result.json'), 'utf8'));
     assert.deepEqual(result.results.map((entry) => entry.itemId), ['m1']);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('thread-context matches mention pending and excludes self tweet routing', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  try {
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, 'pending-mention-reaction.json'), `${JSON.stringify({
+      id: 'mention-pending',
+      kind: 'mention-reaction',
+      status: 'needs_approval',
+      threadId: '1510314049735360582',
+      threadName: 'Xメンション 2026-05-31 mention',
+      items: [
+        {
+          id: 'm1',
+          tweetLogId: 'log-1',
+          postId: '1234567890',
+          username: 'harumeri_',
+          type: 'reply',
+          body: '@ai_nikechan 😭',
+          replyAction: 'reply',
+          quoteAction: 'skip',
+          replyText: 'ありがとうございます。',
+          reason: 'reply',
+        },
+      ],
+    })}\n`);
+    await writeFile(join(stateDir, 'pending-self-tweet.json'), `${JSON.stringify({
+      id: 'self-pending',
+      kind: 'self-tweet',
+      status: 'needs_approval',
+      threadId: '1510313471366004886',
+      candidates: [{ id: '1', text: '別の候補です。' }],
+    })}\n`);
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+    const result = spawnSync(process.execPath, [
+      'scripts/nikechan-hermes.mjs',
+      'thread-context',
+      '--thread-id',
+      '1510314049735360582',
+      '--json',
+    ], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.match, true);
+    assert.equal(parsed.workflow, 'mention-reaction');
+    assert.equal(parsed.pending.id, 'mention-pending');
+    assert.match(parsed.routingInstruction.join('\n'), /Do not execute self-tweet/u);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('mention revision can preserve approval thread when requested', async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  try {
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(join(stateDir, 'pending-mention-reaction.json'), `${JSON.stringify({
+      id: 'old-mention',
+      kind: 'mention-reaction',
+      status: 'needs_approval',
+      threadId: '1510314049735360582',
+      threadName: 'Xメンション 2026-05-31 old',
+      notifiedAt: '2026-05-31T01:00:00.000Z',
+      items: [{ id: 'm1', tweetLogId: 'old-log', postId: '111', replyAction: 'reply', replyText: 'old' }],
+    })}\n`);
+    const context = {
+      revisionCount: 1,
+      candidates: [
+        {
+          id: 'm1',
+          tweetLogId: 'new-log',
+          postId: '222',
+          username: 'harumeri_',
+          displayName: 'はるめり',
+          type: 'reply',
+          body: '@ai_nikechan 😭',
+        },
+      ],
+    };
+    await writeFile(join(stateDir, 'mention-context.json'), `${JSON.stringify(context)}\n`);
+    const env = {
+      ...process.env,
+      NIKECHAN_X_STATE_DIR: stateDir,
+      NIKECHAN_X_RELEASE_MODE: 'dry-run',
+      SUPABASE_URL: '',
+      SUPABASE_SERVICE_ROLE_KEY: '',
+    };
+    const items = JSON.stringify({
+      items: [
+        {
+          id: 'm1',
+          tweetLogId: 'new-log',
+          postId: '222',
+          username: 'harumeri_',
+          displayName: 'はるめり',
+          type: 'reply',
+          body: '@ai_nikechan 😭',
+          replyAction: 'reply',
+          quoteAction: 'skip',
+          replyText: 'はるめりさん、ありがとうございます。',
+          reason: '修正版',
+        },
+      ],
+    });
+    const proposed = spawnSync(process.execPath, [
+      'scripts/nikechan-hermes.mjs',
+      'mention-propose',
+      '--preserve-thread',
+      'true',
+      '--items-json',
+      items,
+    ], {
+      cwd: join(import.meta.dirname, '..'),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(proposed.status, 0, proposed.stderr);
+    const pending = JSON.parse(await readFile(join(stateDir, 'pending-mention-reaction.json'), 'utf8'));
+    assert.equal(pending.supersedesPendingId, 'old-mention');
+    assert.equal(pending.threadId, '1510314049735360582');
+    assert.equal(pending.threadName, 'Xメンション 2026-05-31 old');
+    assert.equal(pending.revisionCount, 1);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

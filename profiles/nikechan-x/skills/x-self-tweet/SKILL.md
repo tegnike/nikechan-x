@@ -34,9 +34,9 @@ node scripts/nikechan-hermes.mjs preflight-live
 - `context.duplicateReference` に近い話題・言い回しは作らない。禁止リスト管理ではなく、その場の重複参照として扱う
 - 候補生成後は必ず `propose` に渡し、guardとpending保存を通す
 - `propose` 後は `notify-pending --thread` を実行し、候補ごとのDiscord threadを作って候補全文を提示する
-- マスターがthread内で番号承認・修正・見送りを返信した場合は、本文を `resolve --text` に渡して判定と記録をCLIに任せる
-- `resolve` が `revise` を返した場合だけ、feedbackを反映した新しい候補を作り直して `propose` する
-- 修正指示の場合は、既存pendingを参考に新しい候補を作り直して `propose` し、同じthreadへ `notify-pending --thread` ではなく `pending` の内容を返す
+- マスターがthread内で番号承認・修正・見送りを返信した場合は、固定文言ではなくLLM判断で扱う
+- 承認時は `approve --ids <番号>`、修正時は既存pendingを参考に `propose --preserve-thread true` で新しい候補を作り直す
+- 修正後は同じthreadへ候補内容を返し、別threadを作らない
 
 ## Twitter用ニケちゃん文体
 
@@ -75,13 +75,29 @@ node scripts/nikechan-hermes.mjs preflight-live
 ]
 ```
 
-## 承認時
+## Discord承認・修正thread
 
-マスターが「1で」「1番」「投稿して」「OK」など明確に承認した場合だけ:
+候補thread内のマスター返信は、固定文言ではなくLLM判断で扱う。
+
+- 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認として扱う
+- 番号指定があれば該当候補だけ、指定がなければ文脈上もっとも自然な候補を承認する
+- 承認時は `node scripts/nikechan-hermes.mjs approve --ids <番号>` を実行し、結果を短く報告する
+- 「ここをこう変えて」「もっと短く」「語尾を変えて」などは修正指示として扱う
+- 修正時は現在pendingを元に候補JSONを作り直し、`node scripts/nikechan-hermes.mjs propose --preserve-thread true --candidates-json '<json>'` を実行する
+- 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持する
+- self-tweet threadでは mention-reaction pending を実行しない
+- Discordへの返答では、内部コマンド、pending ID、`needs_approval`、JSON、実行ログを通常は出さない。マスターがログ確認を求めた場合だけ最小限に出す
+- 修正後は「了解しました。では雰囲気を変えて以下のような案でどうでしょう。」のような自然な短文と、変更後の候補本文だけを返す
+- 承認・投稿後は投稿済みURLだけを簡潔に返す
+
+補助コマンド:
 
 ```bash
-node scripts/nikechan-hermes.mjs resolve --text "1で" --notify
+node scripts/nikechan-hermes.mjs thread-context --thread-id "<Discord thread id>"
+node scripts/nikechan-hermes.mjs resolve --text "<Discord返信本文>" --notify
 ```
+
+`resolve` は補助用。thread返信の主判断はLLMが行い、承認なら `approve`、修正なら `propose --preserve-thread true` を直接使う。
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` ならX APIは呼ばず、記録だけ行う。
 `live` または `canary-live` かつ `NIKECHAN_X_LIVE_ARMED=yes` のときだけX API投稿を実行する。

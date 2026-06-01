@@ -1,0 +1,6 @@
+name: x-approval-router
+version: "1.0.0"
+description: Route Discord replies in X approval threads to the matching pending workflow context.
+author: nikechan
+provides_hooks:
+  - pre_gateway_dispatch

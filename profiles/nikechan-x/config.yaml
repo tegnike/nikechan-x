@@ -1,0 +1,189 @@
+model:
+  default: gpt-5.5
+  provider: openai-codex
+  base_url: https://chatgpt.com/backend-api/codex
+  api_mode: codex_responses
+terminal:
+  backend: local
+  cwd: /profile
+  timeout: 180
+  docker_mount_cwd_to_workspace: false
+  lifetime_seconds: 300
+  container_cpu: 1
+  container_memory: 5120
+  container_disk: 51200
+  container_persistent: true
+browser:
+  inactivity_timeout: 120
+web:
+  search_backend: tavily
+  extract_backend: tavily
+discord:
+  auto_thread: true
+  thread_require_mention: false
+  free_response_channels:
+  - '1477766217673478234'
+  - '1509865603714908304'
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: true
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 3
+    same_tool_failure: 4
+    idempotent_no_progress: 3
+compression:
+  enabled: true
+  threshold: 0.5
+  target_ratio: 0.2
+  protect_last_n: 20
+  protect_first_n: 3
+prompt_caching:
+  cache_ttl: 5m
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  nudge_interval: 10
+  flush_min_turns: 6
+session_reset:
+  mode: both
+  idle_minutes: 1440
+  at_hour: 4
+group_sessions_per_user: false
+streaming:
+  enabled: false
+display:
+  tool_progress: false
+  platforms:
+    discord:
+      tool_progress: false
+plugins:
+  enabled:
+  - x-approval-router
+skills:
+  creation_nudge_interval: 15
+  platform_disabled:
+    discord:
+    - airtable
+    - apple-notes
+    - apple-reminders
+    - ascii-art
+    - ascii-video
+    - audiocraft-audio-generation
+    - baoyu-article-illustrator
+    - baoyu-comic
+    - baoyu-infographic
+    - blogwatcher
+    - claude-code
+    - claude-design
+    - codebase-inspection
+    - codex
+    - comfyui
+    - debugging-hermes-tui-commands
+    - design-md
+    - discord-freeze
+    - dogfood
+    - dspy
+    - evaluating-llms-harness
+    - findmy
+    - gif-search
+    - github-auth
+    - github-code-review
+    - github-issues
+    - github-pr-workflow
+    - github-repo-management
+    - godmode
+    - google-workspace
+    - heartmula
+    - hermes-agent
+    - hermes-agent-skill-authoring
+    - himalaya
+    - huggingface-hub
+    - humanizer
+    - ideation
+    - imessage
+    - jupyter-live-kernel
+    - kanban-codex-lane
+    - kanban-orchestrator
+    - kanban-worker
+    - linear
+    - llama-cpp
+    - llm-wiki
+    - macos-computer-use
+    - manim-video
+    - maps
+    - minecraft-modpack-server
+    - nano-pdf
+    - native-mcp
+    - node-inspect-debugger
+    - notion
+    - obliteratus
+    - obsidian
+    - ocr-and-documents
+    - opencode
+    - openhue
+    - p5js
+    - pixel-art
+    - plan
+    - pokemon-player
+    - polymarket
+    - powerpoint
+    - pretext
+    - python-debugpy
+    - requesting-code-review
+    - research-paper-writing
+    - segment-anything-model
+    - serving-llms-vllm
+    - sketch
+    - songsee
+    - songwriting-and-ai-music
+    - spike
+    - spotify
+    - subagent-driven-development
+    - systematic-debugging
+    - teams-meeting-pipeline
+    - test-driven-development
+    - touchdesigner-mcp
+    - webhook-subscriptions
+    - weights-and-biases
+    - writing-plans
+    - xurl
+    - yuanbao
+  disabled:
+  - elyth-cycle
+  - karakuri-turn
+  - karakuri-world
+  - world-memory-curation
+  - world-safety-guard
+agent:
+  max_turns: 60
+  verbose: false
+  reasoning_effort: medium
+  disabled_toolsets:
+  - file
+  - code_execution
+  - cronjob
+  - delegation
+  - messaging
+  - todo
+  - image_gen
+  - vision
+  - video
+  - tts
+  - session_search
+  - clarify
+  - discord_admin
+  gateway_timeout: 1800
+  gateway_timeout_warning: 900
+  restart_drain_timeout: 120
+platform_toolsets:
+  cli:
+  - hermes-cli
+  discord:
+  - terminal
+  - web

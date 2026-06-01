@@ -1,5 +1,5 @@
 model:
-  default: gpt-5.3-codex-spark
+  default: gpt-5.5
   provider: openai-codex
   base_url: https://chatgpt.com/backend-api/codex
   api_mode: codex_responses
@@ -64,6 +64,9 @@ display:
   platforms:
     discord:
       tool_progress: off
+plugins:
+  enabled:
+    - x-approval-router
 skills:
   creation_nudge_interval: 15
   platform_disabled:

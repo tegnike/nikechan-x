@@ -1,8 +1,8 @@
 services:
-  nikechan-hermes:
+  nikechan-x:
     build:
       context: .
-    container_name: nikechan-hermes
+    container_name: nikechan-x
     restart: unless-stopped
     working_dir: /profile
     user: "1000:1000"
@@ -15,11 +15,50 @@ services:
       - HOME=/home/node
       - HERMES_HOME=/profile
       - HERMES_ACCEPT_HOOKS=1
+      - HERMES_ENABLE_PROJECT_PLUGINS=1
       - TZ=Europe/Warsaw
+      - DISCORD_ALLOWED_CHANNELS=1477766217673478234,1509865603714908304
+      - DISCORD_HOME_CHANNEL=1477766217673478234
+      - DISCORD_HOME_CHANNEL_NAME=nikechan-tweet
     command:
       - python3
       - -m
       - hermes_cli.main
+      - -p
+      - nikechan-x
+      - gateway
+      - run
+      - --replace
+      - --accept-hooks
+
+  nikechan-another-world:
+    build:
+      context: .
+    container_name: nikechan-another-world
+    restart: unless-stopped
+    working_dir: /profile
+    user: "1000:1000"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - .:/profile
+    environment:
+      - HOME=/home/node
+      - HERMES_HOME=/profile
+      - HERMES_ACCEPT_HOOKS=1
+      - HERMES_ENABLE_PROJECT_PLUGINS=1
+      - TZ=Europe/Warsaw
+      - PATH=/profile/profiles/nikechan-another-world/bin:/usr/local/bin:/usr/bin:/bin
+      - DISCORD_ALLOWED_CHANNELS=1483150821372854442,1493132651958112319
+      - DISCORD_HOME_CHANNEL=1483150821372854442
+      - DISCORD_HOME_CHANNEL_NAME=nikechan-world
+    command:
+      - python3
+      - -m
+      - hermes_cli.main
+      - -p
+      - nikechan-another-world
       - gateway
       - run
       - --replace
