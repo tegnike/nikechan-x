@@ -10,8 +10,8 @@ description: #AIニケちゃん タグの未チェックツイートを収集し
 HermesはRT/skip判断を担当し、X投稿境界・guard・記録はprofile内CLIに任せる。
 
 ```bash
-node scripts/nikechan-hermes.mjs hashtag-context
-node scripts/nikechan-hermes.mjs hashtag-execute --items-json '<json>' --notify --thread
+node scripts/nikechan-x.mjs hashtag-context
+node scripts/nikechan-x.mjs hashtag-execute --items-json '<json>' --notify --thread
 ```
 
 ## 方針

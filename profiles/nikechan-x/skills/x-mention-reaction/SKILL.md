@@ -10,13 +10,13 @@ description: Xの未チェックreply/quote/@メンションを収集し、返�
 Hermesは判断と文章生成を担当し、X投稿境界・pending state・guard・記録はprofile内CLIに任せる。
 
 ```bash
-node scripts/nikechan-hermes.mjs mention-context
-node scripts/nikechan-hermes.mjs mention-propose --items-json '<json>'
-node scripts/nikechan-hermes.mjs notify-mention-pending --thread
-node scripts/nikechan-hermes.mjs mention-resolve --text "<Discord返信本文>" --notify
-node scripts/nikechan-hermes.mjs mention-pending
-node scripts/nikechan-hermes.mjs mention-approve --ids m1,m2
-node scripts/nikechan-hermes.mjs mention-cancel --reason "<理由>"
+node scripts/nikechan-x.mjs mention-context
+node scripts/nikechan-x.mjs mention-propose --items-json '<json>'
+node scripts/nikechan-x.mjs notify-mention-pending --thread
+node scripts/nikechan-x.mjs mention-resolve --text "<Discord返信本文>" --notify
+node scripts/nikechan-x.mjs mention-pending
+node scripts/nikechan-x.mjs mention-approve --ids m1,m2
+node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
 ```
 
 ## 方針
@@ -69,9 +69,9 @@ node scripts/nikechan-hermes.mjs mention-cancel --reason "<理由>"
 
 - 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認として扱う
 - 番号や `m1` / `m2` 指定があれば該当候補だけ、指定がなければ現在提示中の実行対象を承認する
-- 承認時は `node scripts/nikechan-hermes.mjs mention-approve --ids m1,m2` を実行し、結果を短く報告する
+- 承認時は `node scripts/nikechan-x.mjs mention-approve --ids m1,m2` を実行し、結果を短く報告する
 - 「ここをこう変えて」「もう少し柔らかく」「この文だけ直して」などは修正指示として扱う
-- 修正時は現在の `pending.items` と `pending.candidates` を元に全候補JSONを作り直し、`node scripts/nikechan-hermes.mjs mention-propose --preserve-thread true --items-json '<json>'` を実行する
+- 修正時は現在の `pending.items` と `pending.candidates` を元に全候補JSONを作り直し、`node scripts/nikechan-x.mjs mention-propose --preserve-thread true --items-json '<json>'` を実行する
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持する
 - メンション反応threadでは self-tweet pending を実行しない
 - Discordへの返答では、内部コマンド、pending ID、`needs_approval`、JSON、実行ログを通常は出さない。マスターがログ確認を求めた場合だけ最小限に出す
@@ -81,8 +81,8 @@ node scripts/nikechan-hermes.mjs mention-cancel --reason "<理由>"
 補助コマンド:
 
 ```bash
-node scripts/nikechan-hermes.mjs thread-context --thread-id "<Discord thread id>"
-node scripts/nikechan-hermes.mjs mention-resolve --text "<Discord返信本文>" --notify
+node scripts/nikechan-x.mjs thread-context --thread-id "<Discord thread id>"
+node scripts/nikechan-x.mjs mention-resolve --text "<Discord返信本文>" --notify
 ```
 
 `mention-resolve` は補助用。thread返信の主判断はLLMが行い、承認なら `mention-approve`、修正なら `mention-propose --preserve-thread true` を直接使う。

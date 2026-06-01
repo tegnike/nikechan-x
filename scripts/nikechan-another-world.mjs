@@ -101,8 +101,8 @@ async function runWorkflow(request) {
       liveArmed: liveArmed(),
       coreProfile:
         request.surface === 'elyth'
-          ? 'nikechan-hermes-another-world-elyth'
-          : 'nikechan-hermes-another-world-karakuri',
+          ? 'nikechan-x-another-world-elyth'
+          : 'nikechan-x-another-world-karakuri',
       guardStatus: finalBlocked ? 'blocked' : 'passed',
       egressGuard: guard.status,
       execution: execution?.status ?? 'not-run',
@@ -1517,8 +1517,8 @@ function hermesModel() {
 
 function nextActionFor(request, blocked) {
   if (blocked) return 'Inspect guard/audit output and keep external execution stopped.';
-  if (request.workflow === 'elyth-cycle') return 'Review the ELYTH plan in nikechan-hermes Hermes before live release.';
-  return 'Review the Karakuri decision in nikechan-hermes Hermes before live release.';
+  if (request.workflow === 'elyth-cycle') return 'Review the ELYTH plan in nikechan-x Hermes before live release.';
+  return 'Review the Karakuri decision in nikechan-x Hermes before live release.';
 }
 
 async function selfTest() {

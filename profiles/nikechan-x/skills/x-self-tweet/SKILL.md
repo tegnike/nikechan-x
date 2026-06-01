@@ -10,14 +10,14 @@ description: AIニケちゃんのXセルフツイート候補を作る。マス�
 Hermes本体は変更しない。Hermesのscheduler/session/Discord受信を優先し、X投稿境界だけprofile内CLIを使う。
 
 ```bash
-node scripts/nikechan-hermes.mjs context --source-mode auto
-node scripts/nikechan-hermes.mjs propose --source-mode <mode> --candidates-json '<json>'
-node scripts/nikechan-hermes.mjs notify-pending --thread
-node scripts/nikechan-hermes.mjs resolve --text "<Discord返信本文>" --notify
-node scripts/nikechan-hermes.mjs pending
-node scripts/nikechan-hermes.mjs approve --ids <番号>
-node scripts/nikechan-hermes.mjs cancel --reason "<理由>"
-node scripts/nikechan-hermes.mjs preflight-live
+node scripts/nikechan-x.mjs context --source-mode auto
+node scripts/nikechan-x.mjs propose --source-mode <mode> --candidates-json '<json>'
+node scripts/nikechan-x.mjs notify-pending --thread
+node scripts/nikechan-x.mjs resolve --text "<Discord返信本文>" --notify
+node scripts/nikechan-x.mjs pending
+node scripts/nikechan-x.mjs approve --ids <番号>
+node scripts/nikechan-x.mjs cancel --reason "<理由>"
+node scripts/nikechan-x.mjs preflight-live
 ```
 
 ## 方針
@@ -81,9 +81,9 @@ node scripts/nikechan-hermes.mjs preflight-live
 
 - 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認として扱う
 - 番号指定があれば該当候補だけ、指定がなければ文脈上もっとも自然な候補を承認する
-- 承認時は `node scripts/nikechan-hermes.mjs approve --ids <番号>` を実行し、結果を短く報告する
+- 承認時は `node scripts/nikechan-x.mjs approve --ids <番号>` を実行し、結果を短く報告する
 - 「ここをこう変えて」「もっと短く」「語尾を変えて」などは修正指示として扱う
-- 修正時は現在pendingを元に候補JSONを作り直し、`node scripts/nikechan-hermes.mjs propose --preserve-thread true --candidates-json '<json>'` を実行する
+- 修正時は現在pendingを元に候補JSONを作り直し、`node scripts/nikechan-x.mjs propose --preserve-thread true --candidates-json '<json>'` を実行する
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持する
 - self-tweet threadでは mention-reaction pending を実行しない
 - Discordへの返答では、内部コマンド、pending ID、`needs_approval`、JSON、実行ログを通常は出さない。マスターがログ確認を求めた場合だけ最小限に出す
@@ -93,8 +93,8 @@ node scripts/nikechan-hermes.mjs preflight-live
 補助コマンド:
 
 ```bash
-node scripts/nikechan-hermes.mjs thread-context --thread-id "<Discord thread id>"
-node scripts/nikechan-hermes.mjs resolve --text "<Discord返信本文>" --notify
+node scripts/nikechan-x.mjs thread-context --thread-id "<Discord thread id>"
+node scripts/nikechan-x.mjs resolve --text "<Discord返信本文>" --notify
 ```
 
 `resolve` は補助用。thread返信の主判断はLLMが行い、承認なら `approve`、修正なら `propose --preserve-thread true` を直接使う。
@@ -106,5 +106,5 @@ liveへ切り替える前は `preflight-live` で疎通、pending、guardを確�
 ## 見送り時
 
 ```bash
-node scripts/nikechan-hermes.mjs cancel --reason "マスターが見送り"
+node scripts/nikechan-x.mjs cancel --reason "マスターが見送り"
 ```

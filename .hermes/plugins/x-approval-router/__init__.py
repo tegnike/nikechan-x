@@ -73,10 +73,10 @@ def _build_rewrite_prompt(match: dict[str, Any], master_reply: str) -> str:
 判断方針:
 - 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認です。
 - 番号や m1/m2 指定があれば該当候補だけ、指定がなければ現在提示中の実行対象を承認します。
-- 「ここをこう変えて」「もう少し柔らかく」「この文だけ直して」などは修正です。LLM判断で候補全文を作り直し、`node scripts/nikechan-hermes.mjs mention-propose --preserve-thread true --items-json '<json>'` を実行してください。
+- 「ここをこう変えて」「もう少し柔らかく」「この文だけ直して」などは修正です。LLM判断で候補全文を作り直し、`node scripts/nikechan-x.mjs mention-propose --preserve-thread true --items-json '<json>'` を実行してください。
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持してください。
 - このthreadでは self-tweet pending を実行しないでください。
-- 承認時は `node scripts/nikechan-hermes.mjs mention-approve --ids ...` だけを実行し、結果を短く報告してください。
+- 承認時は `node scripts/nikechan-x.mjs mention-approve --ids ...` だけを実行し、結果を短く報告してください。
 
 Discordへの返答スタイル:
 - マスターには内部コマンド、pending ID、`needs_approval`、JSON、実行ログを見せないでください。マスターが明示的にログ確認を求めた場合だけ最小限に出します。
@@ -90,10 +90,10 @@ Discordへの返答スタイル:
 判断方針:
 - 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認です。
 - 番号指定があれば該当候補だけ、指定がなければ文脈上もっとも自然な候補を承認します。
-- 「ここをこう変えて」「もっと短く」「語尾を変えて」などは修正です。LLM判断で候補を作り直し、`node scripts/nikechan-hermes.mjs propose --preserve-thread true --candidates-json '<json>'` を実行してください。
+- 「ここをこう変えて」「もっと短く」「語尾を変えて」などは修正です。LLM判断で候補を作り直し、`node scripts/nikechan-x.mjs propose --preserve-thread true --candidates-json '<json>'` を実行してください。
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持してください。
 - このthreadでは mention-reaction pending を実行しないでください。
-- 承認時は `node scripts/nikechan-hermes.mjs approve --ids ...` だけを実行し、結果を短く報告してください。
+- 承認時は `node scripts/nikechan-x.mjs approve --ids ...` だけを実行し、結果を短く報告してください。
 
 Discordへの返答スタイル:
 - マスターには内部コマンド、pending ID、`needs_approval`、JSON、実行ログを見せないでください。マスターが明示的にログ確認を求めた場合だけ最小限に出します。

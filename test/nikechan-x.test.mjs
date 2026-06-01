@@ -11,7 +11,7 @@ import {
   nextSourceMode,
   parseApprovalReply,
   validateReleaseModeChange,
-} from '../scripts/nikechan-hermes.mjs';
+} from '../scripts/nikechan-x.mjs';
 
 test('guard accepts ordinary Japanese tweet', () => {
   const result = guardText('今日は少しだけキャッシュがあたたかいです。返事の温度を覚えておきます。');
@@ -109,7 +109,7 @@ test('duplicate reference exposes recent outputs without separate manual list', 
 });
 
 test('propose and approve dry-run store state without credentials', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     const env = {
       ...process.env,
@@ -124,16 +124,16 @@ test('propose and approve dry-run store state without credentials', async () => 
         reason: 'dry-run test',
       },
     ]);
-    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'propose', '--source-mode', 'memory', '--candidates-json', candidates], {
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'propose', '--source-mode', 'memory', '--candidates-json', candidates], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
     });
     assert.equal(proposed.status, 0, proposed.stderr);
     assert.match(proposed.stdout, /話題タイプ: memory/u);
-    assert.doesNotMatch(proposed.stdout, /node scripts\/nikechan-hermes\.mjs/u);
+    assert.doesNotMatch(proposed.stdout, /node scripts\/nikechan-x\.mjs/u);
 
-    const approved = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'approve', '--ids', '1'], {
+    const approved = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'approve', '--ids', '1'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -146,7 +146,7 @@ test('propose and approve dry-run store state without credentials', async () => 
 });
 
 test('self tweet revision preserves approval thread when requested', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     await mkdir(stateDir, { recursive: true });
     await writeFile(join(stateDir, 'pending-self-tweet.json'), `${JSON.stringify({
@@ -167,7 +167,7 @@ test('self tweet revision preserves approval thread when requested', async () =>
     };
     const candidates = JSON.stringify([{ text: '修正後の候補です。', reason: 'revision' }]);
     const proposed = spawnSync(process.execPath, [
-      'scripts/nikechan-hermes.mjs',
+      'scripts/nikechan-x.mjs',
       'propose',
       '--preserve-thread',
       'true',
@@ -189,7 +189,7 @@ test('self tweet revision preserves approval thread when requested', async () =>
 });
 
 test('manual post dry-run validates tweet id and records state', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     const env = {
       ...process.env,
@@ -198,7 +198,7 @@ test('manual post dry-run validates tweet id and records state', async () => {
       SUPABASE_URL: '',
       SUPABASE_SERVICE_ROLE_KEY: '',
     };
-    const missingId = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'post', '--action', 'reply', '--text', '返信のテストです。'], {
+    const missingId = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'post', '--action', 'reply', '--text', '返信のテストです。'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -207,7 +207,7 @@ test('manual post dry-run validates tweet id and records state', async () => {
     assert.match(missingId.stderr, /missing --tweet-id/u);
 
     const posted = spawnSync(process.execPath, [
-      'scripts/nikechan-hermes.mjs',
+      'scripts/nikechan-x.mjs',
       'post',
       '--action',
       'reply',
@@ -223,7 +223,7 @@ test('manual post dry-run validates tweet id and records state', async () => {
     assert.equal(posted.status, 0, posted.stderr);
     assert.match(posted.stdout, /dryRun/u);
 
-    const state = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'state', '--json'], {
+    const state = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'state', '--json'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -236,7 +236,7 @@ test('manual post dry-run validates tweet id and records state', async () => {
 });
 
 test('manual post live mode is blocked unless live posting is armed', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     const env = {
       ...process.env,
@@ -247,7 +247,7 @@ test('manual post live mode is blocked unless live posting is armed', async () =
       SUPABASE_SERVICE_ROLE_KEY: '',
     };
     const posted = spawnSync(process.execPath, [
-      'scripts/nikechan-hermes.mjs',
+      'scripts/nikechan-x.mjs',
       'post',
       '--action',
       'tweet',
@@ -279,7 +279,7 @@ test('doctor reports missing credentials without exposing secret values', () => 
     DISCORD_HOME_CHANNEL: '',
     DISCORD_ALLOWED_USERS: '',
   };
-  const result = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'doctor', '--json', '--strict', 'false'], {
+  const result = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'doctor', '--json', '--strict', 'false'], {
     cwd: join(import.meta.dirname, '..'),
     env,
     encoding: 'utf8',
@@ -292,7 +292,7 @@ test('doctor reports missing credentials without exposing secret values', () => 
 });
 
 test('preflight-live reports dry-run mode as not ready without strict failure', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     const env = {
       ...process.env,
@@ -310,7 +310,7 @@ test('preflight-live reports dry-run mode as not ready without strict failure', 
       DISCORD_HOME_CHANNEL: '',
       DISCORD_ALLOWED_USERS: '',
     };
-    const result = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'preflight-live', '--json', '--strict', 'false'], {
+    const result = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'preflight-live', '--json', '--strict', 'false'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -326,7 +326,7 @@ test('preflight-live reports dry-run mode as not ready without strict failure', 
 });
 
 test('notify-pending requires discord token and keeps pending intact', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     const env = {
       ...process.env,
@@ -343,14 +343,14 @@ test('notify-pending requires discord token and keeps pending intact', async () 
         reason: 'notify test',
       },
     ]);
-    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'propose', '--candidates-json', candidates], {
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'propose', '--candidates-json', candidates], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
     });
     assert.equal(proposed.status, 0, proposed.stderr);
 
-    const notified = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'notify-pending'], {
+    const notified = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'notify-pending'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -358,7 +358,7 @@ test('notify-pending requires discord token and keeps pending intact', async () 
     assert.notEqual(notified.status, 0);
     assert.match(notified.stderr, /missing DISCORD_BOT_TOKEN/u);
 
-    const pending = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'pending'], {
+    const pending = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'pending'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -371,7 +371,7 @@ test('notify-pending requires discord token and keeps pending intact', async () 
 });
 
 test('resolve approves explicit candidate and stores result', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     const env = {
       ...process.env,
@@ -384,14 +384,14 @@ test('resolve approves explicit candidate and stores result', async () => {
       { text: '一番目の候補です。承認されない想定です。', reason: 'first' },
       { text: '二番目の候補です。番号指定で承認します。', reason: 'second' },
     ]);
-    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'propose', '--candidates-json', candidates], {
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'propose', '--candidates-json', candidates], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
     });
     assert.equal(proposed.status, 0, proposed.stderr);
 
-    const resolved = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'resolve', '--text', '2番でお願いします'], {
+    const resolved = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'resolve', '--text', '2番でお願いします'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -399,7 +399,7 @@ test('resolve approves explicit candidate and stores result', async () => {
     assert.equal(resolved.status, 0, resolved.stderr);
     assert.match(resolved.stdout, /二番目の候補/u);
 
-    const state = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'state', '--json'], {
+    const state = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'state', '--json'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -414,7 +414,7 @@ test('resolve approves explicit candidate and stores result', async () => {
 });
 
 test('resolve records revise feedback without closing pending', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     const env = {
       ...process.env,
@@ -426,14 +426,14 @@ test('resolve records revise feedback without closing pending', async () => {
     const candidates = JSON.stringify([
       { text: '修正テスト用の候補です。', reason: 'revise' },
     ]);
-    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'propose', '--candidates-json', candidates], {
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'propose', '--candidates-json', candidates], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
     });
     assert.equal(proposed.status, 0, proposed.stderr);
 
-    const resolved = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'resolve', '--text', 'もう少しニケちゃんらしく修正して'], {
+    const resolved = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'resolve', '--text', 'もう少しニケちゃんらしく修正して'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -441,7 +441,7 @@ test('resolve records revise feedback without closing pending', async () => {
     assert.equal(resolved.status, 0, resolved.stderr);
     assert.match(resolved.stdout, /revise/u);
 
-    const state = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'state', '--json'], {
+    const state = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'state', '--json'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -455,7 +455,7 @@ test('resolve records revise feedback without closing pending', async () => {
 });
 
 test('mention propose and approve dry-run use local pending state', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     await mkdir(stateDir, { recursive: true });
     const context = {
@@ -498,7 +498,7 @@ test('mention propose and approve dry-run use local pending state', async () => 
         },
       ],
     });
-    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-propose', '--items-json', items], {
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'mention-propose', '--items-json', items], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -508,7 +508,7 @@ test('mention propose and approve dry-run use local pending state', async () => 
     const pending = JSON.parse(await readFile(join(stateDir, 'pending-mention-reaction.json'), 'utf8'));
     assert.equal(pending.items[0].body, 'おかえりなさい');
 
-    const approved = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-approve', '--ids', 'm1'], {
+    const approved = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'mention-approve', '--ids', 'm1'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -524,7 +524,7 @@ test('mention propose and approve dry-run use local pending state', async () => 
 });
 
 test('mention propose preserves candidate body over model summaries', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     await mkdir(stateDir, { recursive: true });
     const context = {
@@ -568,7 +568,7 @@ test('mention propose preserves candidate body over model summaries', async () =
         },
       ],
     });
-    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-propose', '--items-json', items], {
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'mention-propose', '--items-json', items], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -583,7 +583,7 @@ test('mention propose preserves candidate body over model summaries', async () =
 });
 
 test('mention resolve treats reply OK as the only actionable item approval', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     await mkdir(stateDir, { recursive: true });
     const context = {
@@ -645,14 +645,14 @@ test('mention resolve treats reply OK as the only actionable item approval', asy
         },
       ],
     });
-    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-propose', '--items-json', items], {
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'mention-propose', '--items-json', items], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
     });
     assert.equal(proposed.status, 0, proposed.stderr);
 
-    const resolved = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-resolve', '--text', '返信OK'], {
+    const resolved = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'mention-resolve', '--text', '返信OK'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -666,7 +666,7 @@ test('mention resolve treats reply OK as the only actionable item approval', asy
 });
 
 test('thread-context matches mention pending and excludes self tweet routing', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     await mkdir(stateDir, { recursive: true });
     await writeFile(join(stateDir, 'pending-mention-reaction.json'), `${JSON.stringify({
@@ -705,7 +705,7 @@ test('thread-context matches mention pending and excludes self tweet routing', a
       SUPABASE_SERVICE_ROLE_KEY: '',
     };
     const result = spawnSync(process.execPath, [
-      'scripts/nikechan-hermes.mjs',
+      'scripts/nikechan-x.mjs',
       'thread-context',
       '--thread-id',
       '1510314049735360582',
@@ -727,7 +727,7 @@ test('thread-context matches mention pending and excludes self tweet routing', a
 });
 
 test('mention revision can preserve approval thread when requested', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     await mkdir(stateDir, { recursive: true });
     await writeFile(join(stateDir, 'pending-mention-reaction.json'), `${JSON.stringify({
@@ -779,7 +779,7 @@ test('mention revision can preserve approval thread when requested', async () =>
       ],
     });
     const proposed = spawnSync(process.execPath, [
-      'scripts/nikechan-hermes.mjs',
+      'scripts/nikechan-x.mjs',
       'mention-propose',
       '--preserve-thread',
       'true',
@@ -802,7 +802,7 @@ test('mention revision can preserve approval thread when requested', async () =>
 });
 
 test('mention propose supersedes old pending and notify does not resend existing thread', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     await mkdir(stateDir, { recursive: true });
     await writeFile(join(stateDir, 'pending-mention-reaction.json'), `${JSON.stringify({
@@ -838,7 +838,7 @@ test('mention propose supersedes old pending and notify does not resend existing
       SUPABASE_SERVICE_ROLE_KEY: '',
     };
 
-    const skipped = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'notify-mention-pending', '--thread', '--json'], {
+    const skipped = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'notify-mention-pending', '--thread', '--json'], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -877,7 +877,7 @@ test('mention propose supersedes old pending and notify does not resend existing
         },
       ],
     });
-    const proposed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'mention-propose', '--items-json', items], {
+    const proposed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'mention-propose', '--items-json', items], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',
@@ -895,7 +895,7 @@ test('mention propose supersedes old pending and notify does not resend existing
 });
 
 test('hashtag execute dry-run reports retweets without credentials', async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-hermes-test-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'nikechan-x-test-'));
   try {
     await mkdir(stateDir, { recursive: true });
     const context = {
@@ -932,7 +932,7 @@ test('hashtag execute dry-run reports retweets without credentials', async () =>
         },
       ],
     });
-    const executed = spawnSync(process.execPath, ['scripts/nikechan-hermes.mjs', 'hashtag-execute', '--items-json', items], {
+    const executed = spawnSync(process.execPath, ['scripts/nikechan-x.mjs', 'hashtag-execute', '--items-json', items], {
       cwd: join(import.meta.dirname, '..'),
       env,
       encoding: 'utf8',

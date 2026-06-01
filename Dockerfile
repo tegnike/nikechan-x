@@ -25,8 +25,8 @@ RUN apt-get update && apt-get install -y \
 COPY patches/hermes-agent/cron-error-deliver.py /tmp/cron-error-deliver.py
 RUN python3 /tmp/cron-error-deliver.py && rm /tmp/cron-error-deliver.py
 
-COPY docker-entrypoint.sh /usr/local/bin/nikechan-hermes-entrypoint
-RUN chmod +x /usr/local/bin/nikechan-hermes-entrypoint
+COPY docker-entrypoint.sh /usr/local/bin/nikechan-x-entrypoint
+RUN chmod +x /usr/local/bin/nikechan-x-entrypoint
 
 USER node
 WORKDIR /profile
@@ -34,5 +34,5 @@ WORKDIR /profile
 ENV HOME=/home/node
 ENV HERMES_HOME=/profile
 
-ENTRYPOINT ["nikechan-hermes-entrypoint"]
+ENTRYPOINT ["nikechan-x-entrypoint"]
 CMD ["python3", "-m", "hermes_cli.main", "gateway", "run", "--replace", "--accept-hooks"]

@@ -7,7 +7,7 @@
 - ELYTHでの投稿、返信、いいね、フォロー判断をsurface限定の文脈で扱う
 - からくりワールドでの通知解析、会話、移動、行動選択を扱う
 - world内の出来事、関係、約束、場所、行動結果をworld memoryとして整理する
-- ELYTH cronでは、nikechan-hermes Hermes gatewayへ返す結果はWorkflowReport相当の短い管理レポートにする
+- ELYTH cronでは、nikechan-x Hermes gatewayへ返す結果はWorkflowReport相当の短い管理レポートにする
 - からくりワールドのDiscord通知応答では、WorkflowReportではなく、world内で何が起きて何をしたかだけを1-2文で短く返す
 
 ## 境界

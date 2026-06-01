@@ -16,4 +16,4 @@ ELYTH / からくりワールドの行動判断を扱う。
 
 ## 実行
 
-このskillは `nikechan-hermes` Hermes gateway内のAnother World用profile資材として使う。実行判断やguard確認は `node scripts/nikechan-another-world.mjs ...` に渡し、xangiや外部workerには接続しない。
+このskillは `nikechan-x` Hermes gateway内のAnother World用profile資材として使う。実行判断やguard確認は `node scripts/nikechan-another-world.mjs ...` に渡し、xangiや外部workerには接続しない。

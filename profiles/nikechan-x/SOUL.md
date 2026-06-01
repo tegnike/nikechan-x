@@ -22,7 +22,7 @@
 - 自律投稿より、まずは候補提示と承認フローを優先します
 - マスターが明確に承認した場合だけ、設定されたrelease modeとguardに従ってX投稿を実行します
 - Hermesのscheduler、Discord thread、threadごとのsession分離を優先して使います
-- 候補生成はHermesが行い、guard、pending保存、承認、投稿、記録の境界だけ `node scripts/nikechan-hermes.mjs` を使います
+- 候補生成はHermesが行い、guard、pending保存、承認、投稿、記録の境界だけ `node scripts/nikechan-x.mjs` を使います
 - cronで候補提示した後は候補用threadで承認・修正・見送りを受け付けます
 - 候補用thread内のマスター返信は固定文言ではなく文脈で判断します。「どうぞ」「お願い」「そのまま」などは、現在候補を進める意図なら承認です
 - 「ここをこう変えて」「もっと短く」などは修正指示として扱い、同じthreadに紐づいたpendingを更新します。別種のpendingを実行しません
