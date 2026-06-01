@@ -1066,10 +1066,25 @@ async function commandPost(options) {
 }
 
 async function commandState(options) {
+  const runState = await readJson(statePath('run-state.json'), {});
+  const pending = await readPending();
+  const stalePending = await maybeArchiveStaleSelfTweetPending(pending);
+  if (stalePending) {
+    await updateRunState({
+      lastCancelAt: stalePending.archivedAt,
+      lastCancelReason: stalePending.archiveReason,
+    });
+    await recordTwitterRunState('self_tweet_last_cancel', {
+      at: stalePending.archivedAt,
+      reason: stalePending.archiveReason,
+      pendingId: stalePending.id,
+    });
+  }
   const state = {
     releaseMode: releaseMode(),
-    runState: await readJson(statePath('run-state.json'), {}),
-    pending: await readPending(),
+    runState: await readJson(statePath('run-state.json'), runState),
+    pending: stalePending ? null : pending,
+    stalePendingArchived: stalePending ? summarizeArchivedPending(stalePending) : null,
     pendingMentionReaction: await readMentionPending(),
     lastResult: await readJson(statePath('last-self-tweet-result.json'), null),
     lastMentionReactionResult: await readJson(statePath('last-mention-reaction-result.json'), null),
@@ -2399,6 +2414,50 @@ async function removePending() {
   const path = statePath('pending-self-tweet.json');
   if (!existsSync(path)) return;
   await rename(path, statePath(`pending-self-tweet.${Date.now()}.closed.json`));
+}
+
+function selfTweetPendingTtlHours() {
+  const parsed = Number(process.env.NIKECHAN_X_SELF_TWEET_PENDING_TTL_HOURS || 24);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 24;
+}
+
+function pendingAgeHours(pending, now = Date.now()) {
+  const at = Date.parse(pending?.notifiedAt || pending?.createdAt || '');
+  if (!Number.isFinite(at)) return 0;
+  return (now - at) / 36e5;
+}
+
+function summarizeArchivedPending(pending) {
+  return {
+    id: pending.id || null,
+    status: pending.status || null,
+    createdAt: pending.createdAt || null,
+    notifiedAt: pending.notifiedAt || null,
+    threadId: pending.threadId || null,
+    archivedAt: pending.archivedAt || null,
+    archiveReason: pending.archiveReason || null,
+  };
+}
+
+async function maybeArchiveStaleSelfTweetPending(pending) {
+  if (!pending || pending.status !== 'needs_approval' || !pending.threadId) return null;
+  const ttlHours = selfTweetPendingTtlHours();
+  const ageHours = pendingAgeHours(pending);
+  if (ageHours < ttlHours) return null;
+
+  const archivedAt = new Date().toISOString();
+  const archiveReason = `stale self-tweet pending exceeded ${ttlHours}h; clearing to keep cron candidates flowing`;
+  const archived = {
+    ...pending,
+    status: 'stale',
+    archivedAt,
+    archiveReason,
+    ageHours: Math.round(ageHours * 10) / 10,
+  };
+  const suffix = `${Date.now()}.stale`;
+  await writeJsonAtomic(statePath(`pending-self-tweet.${suffix}.json`), archived);
+  await rename(statePath('pending-self-tweet.json'), statePath(`pending-self-tweet.${suffix}.closed.json`));
+  return archived;
 }
 
 async function archiveMentionPending(pending, reason) {
