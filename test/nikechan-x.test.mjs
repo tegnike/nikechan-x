@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
+  buildAiNewsTweetText,
   buildContextMaterials,
   buildDuplicateReference,
   guardText,
+  isRecentAiNewsItem,
   nextSourceMode,
   parseApprovalReply,
   validateReleaseModeChange,
@@ -106,6 +108,26 @@ test('duplicate reference exposes recent outputs without separate manual list', 
   assert.deepEqual(result.recentPresentedTexts, ['前回の候補です。']);
   assert.deepEqual(result.lastExecutedTexts, ['投稿済みです。']);
   assert.deepEqual(result.recentTweetTexts, ['直近ツイートです。']);
+});
+
+test('AI news tweet text uses fixed article and news list format', () => {
+  const text = buildAiNewsTweetText({
+    url: 'https://corp.glad-cube.com/news/pressrelease/1256/',
+    nike_comment: 'ウェブと実店舗モニターをRAGで繋ぐハイブリッド構成、回答精度とキャラクター愛着を同時に狙う点がSiTestの既存ツールとの違いとして際立ちそうです。',
+  });
+
+  assert.match(text, /^ウェブと実店舗モニター/u);
+  assert.match(text, /\n\n記事: https:\/\/corp\.glad-cube\.com\/news\/pressrelease\/1256\/\nニュース一覧: https:\/\/nikechan\.com\/ai-news$/u);
+  assert.equal(guardText(text, { sourceMode: 'news' }).ok, true);
+  assert.ok([...text].length <= 280);
+});
+
+test('AI news tweet eligibility is limited to items from the past day', () => {
+  const now = Date.parse('2026-06-01T12:00:00.000Z');
+  assert.equal(isRecentAiNewsItem({ published_at: '2026-06-01T00:30:00.000Z' }, now), true);
+  assert.equal(isRecentAiNewsItem({ published_at: '2026-05-31T11:59:59.000Z' }, now), false);
+  assert.equal(isRecentAiNewsItem({ created_at: '2026-06-01T06:00:00.000Z' }, now), true);
+  assert.equal(isRecentAiNewsItem({}), false);
 });
 
 test('propose and approve dry-run store state without credentials', async () => {

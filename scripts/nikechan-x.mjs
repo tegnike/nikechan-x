@@ -12,6 +12,8 @@ const X_PROFILE_SOUL = resolve(X_PROFILE_DIR, 'SOUL.md');
 const STATE_DIR = process.env.NIKECHAN_X_STATE_DIR || resolve(ROOT, 'state');
 const ACCOUNT_NAME = process.env.X_ACCOUNT_NAME || 'ai_nikechan';
 const SOURCE_MODES = ['presence', 'daily_life', 'tech', 'news', 'memory', 'random'];
+const AI_NEWS_LIST_URL = 'https://nikechan.com/ai-news';
+const AI_NEWS_TWEET_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 await loadDotenv(resolve(ROOT, '.env'));
 
@@ -156,6 +158,9 @@ async function main() {
       case 'propose':
         await commandPropose(readOptions(args));
         break;
+      case 'ai-news-tweet':
+        await commandAiNewsTweet(readOptions(args));
+        break;
       case 'pending':
         await commandPending(readOptions(args));
         break;
@@ -236,6 +241,7 @@ Commands:
   context [--source-mode auto|presence|daily_life|tech|news|memory|random]
   guard --text <tweet> [--source-mode news]
   propose --candidates-json '[{"text":"...","reason":"..."}]' [--source-mode presence]
+  ai-news-tweet [--notify] [--thread]
   pending
   notify-pending [--channel <discord_channel_id>] [--thread]
   mention-context
@@ -456,11 +462,16 @@ async function commandPropose(options) {
   const raw = options.candidatesJson || options['candidates-json'];
   if (!raw) throw new Error('missing --candidates-json');
   const parsed = JSON.parse(raw);
-  const sourceMode = options.sourceMode || options['source-mode'] || 'presence';
   const candidates = Array.isArray(parsed) ? parsed : parsed.candidates;
   if (!Array.isArray(candidates) || candidates.length === 0) {
     throw new Error('candidates-json must be an array or {candidates: []}');
   }
+  const pending = await createSelfTweetPending(candidates, options);
+  printPendingMarkdown(pending);
+}
+
+async function createSelfTweetPending(candidates, options = {}) {
+  const sourceMode = options.sourceMode || options['source-mode'] || 'presence';
   const items = candidates.slice(0, 5).map((candidate, index) => {
     const text = String(candidate.text || candidate.tweetText || '').trim();
     const guard = guardText(text, { sourceMode });
@@ -508,7 +519,69 @@ async function commandPropose(options) {
     lastPresentedAt: pending.createdAt,
     recentPresentedTopics: items.map((item) => ({ text: item.text, at: pending.createdAt })),
   });
-  printPendingMarkdown(pending);
+  return pending;
+}
+
+async function commandAiNewsTweet(options) {
+  const item = await selectAiNewsTweetItem(Number(options.limit || 30));
+  if (!item) {
+    await recordActivity('ai_news_skip', { reason: 'no-unpresented-ai-news' }, 'self-tweet', 'skipped');
+    printJsonOrMarkdown({ ok: true, skipped: true, reason: 'no-unpresented-ai-news', wakeAgent: false }, options);
+    return;
+  }
+
+  const text = buildAiNewsTweetText(item);
+  const guard = guardText(text, { sourceMode: 'news' });
+  if (!guard.ok) {
+    await recordActivity('ai_news_skip', {
+      reason: 'guard-blocked',
+      item: aiNewsRef(item),
+      errors: guard.errors,
+    }, 'self-tweet', 'failed');
+    throw new Error(`AI news tweet blocked by guard: ${guard.errors.join('; ')}`);
+  }
+
+  const ref = aiNewsRef(item);
+  const result = await postTweet({ action: 'tweet', text, source: 'self-tweet' });
+  const executedAt = new Date().toISOString();
+  const payload = {
+    item: ref,
+    mode: releaseMode(),
+    result,
+    tweetText: text,
+    executedAt,
+  };
+  await recordActivity('ai_news_execute', payload, 'self-tweet', result.dryRun ? 'dry-run' : 'success');
+  if (!result.dryRun) {
+    await appendAiNewsTweetRefs('ai_news_tweet_executed_items', [ref], {
+      status: 'posted',
+      result,
+      executed_at: executedAt,
+    });
+    await recordTopic(text);
+    await recordLocalEpisode(`AIニュースをX投稿: ${truncate(item.title || item.url, 80)}`);
+  }
+  let notifyResult = null;
+  if (options.notify === true || options.notify === 'true') {
+    const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
+    if (channel) {
+      const report = formatAiNewsTweetReport(payload);
+      notifyResult = options.thread === true || options.thread === 'true'
+        ? await sendDiscordThreadReport(channel, report, {
+          threadTitle: options.threadTitle || `AITuberニュース ${jstDate()}`,
+        })
+        : await sendDiscordMessage(channel, report);
+    }
+  }
+
+  printJsonOrMarkdown({
+    ok: true,
+    item: ref,
+    result,
+    tweetText: text,
+    notifyResult,
+    wakeAgent: false,
+  }, options);
 }
 
 async function commandPending(options) {
@@ -561,12 +634,14 @@ async function commandNotifyPending(options) {
     message_id: result.messageId || result.id || null,
     thread_id: result.threadId || null,
   });
-  printJsonOrMarkdown({
+  const summary = {
     ok: true,
     channel,
     messageId: result.messageId || result.id || null,
     threadId: result.threadId || notifiedPending.threadId || null,
-  }, options);
+  };
+  printJsonOrMarkdown(summary, options);
+  return summary;
 }
 
 async function commandMentionContext(options) {
@@ -1017,6 +1092,13 @@ async function commandApprove(options) {
     await recordTopic(candidate.text);
     await recordLocalEpisode(`self-tweet候補${candidate.id}を${mode === 'live' || mode === 'canary-live' ? '投稿' : 'dry-run承認'}: ${truncate(candidate.text, 100)}`);
   }
+  await recordAiNewsTweetExecution(selected, {
+    pendingId: pending.id,
+    selectedIds: ids,
+    mode,
+    results,
+    executedAt,
+  });
 
   console.log(`承認処理完了 (${mode})`);
   for (const result of results) {
@@ -1721,6 +1803,21 @@ function formatHashtagReport(items, results) {
   return lines.join('\n');
 }
 
+function formatAiNewsTweetReport(payload) {
+  const result = payload.result || {};
+  const item = payload.item || {};
+  const lines = [
+    'AIニュースツイートレポート',
+    '',
+    result.dryRun ? 'dry-runのためX投稿はしていません。' : 'Xへ投稿しました。',
+    result.url ? `投稿: ${result.url}` : '',
+    item.title ? `記事タイトル: ${item.title}` : '',
+    item.url ? `記事: ${item.url}` : '',
+    `ニュース一覧: ${AI_NEWS_LIST_URL}`,
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
 function buildMentionLocalEpisode(items, results, counts) {
   const resultById = new Map(results.map((result) => [result.itemId, result]));
   const acted = items.filter((item) => {
@@ -2004,6 +2101,112 @@ async function recordActivity(stage, parsed, workflow = 'self-tweet', status) {
 
 async function recordTwitterRunState(key, value) {
   await supabaseUpsert('twitter_run_state', { key, value, updated_at: new Date().toISOString() }, 'key');
+}
+
+async function getTwitterRunStateValue(key) {
+  const result = await supabaseGet(`twitter_run_state?key=eq.${encodeURIComponent(key)}&select=value&limit=1`);
+  const value = rows(result)[0]?.value;
+  return typeof value === 'string' ? safeJsonParse(value, null) : value;
+}
+
+async function appendAiNewsTweetRefs(key, refs, metadata = {}) {
+  const current = await getTwitterRunStateValue(key);
+  const existing = Array.isArray(current?.items) ? current.items : [];
+  const now = new Date().toISOString();
+  const merged = new Map();
+  for (const item of existing) {
+    const id = String(item?.id || item?.url || '').trim();
+    if (id) merged.set(id, item);
+  }
+  for (const ref of refs) {
+    const id = String(ref?.id || ref?.url || '').trim();
+    if (!id) continue;
+    merged.set(id, {
+      ...ref,
+      ...metadata,
+      at: now,
+    });
+  }
+  await recordTwitterRunState(key, {
+    items: [...merged.values()].slice(-200),
+  });
+}
+
+async function recordAiNewsTweetExecution(candidates, execution) {
+  const refs = aiNewsRefsFromCandidates(candidates);
+  if (!refs.length) return;
+  await appendAiNewsTweetRefs('ai_news_tweet_executed_items', refs, {
+    ...execution,
+    status: isLiveMode(execution.mode) ? 'posted' : 'approved-dry-run',
+  });
+}
+
+async function selectAiNewsTweetItem(limit = 30) {
+  const [newsResult, presentedState, executedState] = await Promise.all([
+    supabaseGet(`public_ai_character_news?order=published_at.desc.nullslast,created_at.desc&limit=${Number(limit) || 30}&select=id,url,title,source_name,source_domain,published_at,summary,nike_comment,category,tags,created_at`),
+    getTwitterRunStateValue('ai_news_tweet_presented_items'),
+    getTwitterRunStateValue('ai_news_tweet_executed_items'),
+  ]);
+  const consumed = new Set([
+    ...aiNewsRefsFromState(presentedState),
+    ...aiNewsRefsFromState(executedState),
+  ]);
+  return rows(newsResult)
+    .filter((item) => textOf(item.url))
+    .filter((item) => textOf(item.nike_comment || item.summary || item.title))
+    .filter((item) => isRecentAiNewsItem(item))
+    .find((item) => !consumed.has(String(item.id)) && !consumed.has(String(item.url)));
+}
+
+export function isRecentAiNewsItem(item, nowMs = Date.now(), maxAgeMs = AI_NEWS_TWEET_MAX_AGE_MS) {
+  const timestamp = Date.parse(item?.published_at || item?.created_at || '');
+  return Number.isFinite(timestamp) && nowMs - timestamp < maxAgeMs;
+}
+
+export function buildAiNewsTweetText(item) {
+  const articleUrl = textOf(item.url);
+  const suffix = `\n\n記事: ${articleUrl}\nニュース一覧: ${AI_NEWS_LIST_URL}`;
+  const comment = normalizeAiNewsComment(item.nike_comment || item.summary || item.title);
+  const maxCommentLength = Math.max(1, 280 - [...suffix].length);
+  return `${clipText(comment, maxCommentLength)}${suffix}`.trim();
+}
+
+function normalizeAiNewsComment(value) {
+  return textOf(value)
+    .replace(/https?:\/\/\S+/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function clipText(text, maxLength) {
+  const chars = [...textOf(text)];
+  if (chars.length <= maxLength) return chars.join('');
+  if (maxLength <= 1) return '…';
+  return `${chars.slice(0, maxLength - 1).join('').replace(/[、。,.，．\s]+$/u, '')}…`;
+}
+
+function aiNewsRef(item) {
+  return {
+    type: 'ai_character_news',
+    id: String(item.id || ''),
+    url: String(item.url || ''),
+    title: String(item.title || ''),
+    sourceName: String(item.source_name || item.sourceName || ''),
+    publishedAt: String(item.published_at || item.publishedAt || ''),
+  };
+}
+
+function aiNewsRefsFromCandidates(candidates) {
+  return (Array.isArray(candidates) ? candidates : [])
+    .flatMap((candidate) => Array.isArray(candidate.sourceRefs) ? candidate.sourceRefs : [])
+    .filter((ref) => ref?.type === 'ai_character_news' && (ref.id || ref.url))
+    .map(aiNewsRef);
+}
+
+function aiNewsRefsFromState(state) {
+  return (Array.isArray(state?.items) ? state.items : [])
+    .flatMap((item) => [String(item.id || '').trim(), String(item.url || '').trim()])
+    .filter(Boolean);
 }
 
 async function recordTopic(text) {
