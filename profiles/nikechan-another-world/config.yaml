@@ -186,3 +186,19 @@ platform_toolsets:
   discord:
   - terminal
   - web
+
+# Relax command approval friction for karakuri-world actions.
+# Keep dangerous-command checks, but disable Tirith Unicode false positives.
+approvals:
+  mode: smart
+  timeout: 60
+  cron_mode: deny
+  mcp_reload_confirm: true
+  destructive_slash_confirm: true
+security:
+  allow_private_urls: false
+  redact_secrets: true
+  tirith_enabled: false
+  tirith_path: tirith
+  tirith_timeout: 5
+  tirith_fail_open: true
