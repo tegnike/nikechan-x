@@ -351,10 +351,12 @@ export function buildContextMaterials(sourceMode, sources) {
   const notes = rows(sources.publicNotes).filter((row) => textOf(row.title) || textOf(row.content));
   const wiki = rows(sources.publicWiki).filter((row) => textOf(row.title) || textOf(row.summary));
   const runRows = rows(sources.runStateRows);
+  const aiNewsTweetUrls = aiNewsUrlsFromRunRows(runRows);
 
   const topicPreviews = runRows
     .flatMap((row) => extractTopicPreviews(row.value))
     .map((item) => ({ type: 'topic', ...item }))
+    .filter((item) => !isAiNewsTweetMaterial(item, aiNewsTweetUrls))
     .slice(0, 8);
   const tweetMaterials = tweets.map((row) => ({
     type: 'tweet',
@@ -362,7 +364,7 @@ export function buildContextMaterials(sourceMode, sources) {
     url: row.url || '',
     actionType: row.action_type || '',
     createdAt: row.created_at || '',
-  }));
+  })).filter((item) => !isAiNewsTweetMaterial(item, aiNewsTweetUrls));
   const episodeMaterials = episodes.map((row) => ({
     type: 'episode',
     text: textOf(row.content),
@@ -433,15 +435,24 @@ export function buildContextMaterials(sourceMode, sources) {
 }
 
 export function buildDuplicateReference(runState, sources) {
+  const runRows = rows(sources.runStateRows);
+  const aiNewsTweetUrls = aiNewsUrlsFromRunRows(runRows);
   const presented = Array.isArray(runState.recentPresentedTopics)
-    ? runState.recentPresentedTopics.map((item) => textOf(item.text)).filter(Boolean)
+    ? runState.recentPresentedTopics
+      .map((item) => textOf(item.text))
+      .filter(Boolean)
+      .filter((text) => !isAiNewsTweetMaterial({ text }, aiNewsTweetUrls))
     : [];
   const executed = Array.isArray(runState.lastExecutedTexts)
-    ? runState.lastExecutedTexts.map(textOf).filter(Boolean)
+    ? runState.lastExecutedTexts
+      .map(textOf)
+      .filter(Boolean)
+      .filter((text) => !isAiNewsTweetMaterial({ text }, aiNewsTweetUrls))
     : [];
   const tweets = rows(sources.recentTweets)
     .map((row) => textOf(row.content))
     .filter(Boolean)
+    .filter((text) => !isAiNewsTweetMaterial({ text }, aiNewsTweetUrls))
     .slice(0, 12);
   return {
     guidance: 'Treat these as recent outputs. Do not paraphrase or reuse the same topic angle.',
@@ -2210,6 +2221,22 @@ function aiNewsRefsFromState(state) {
   return (Array.isArray(state?.items) ? state.items : [])
     .flatMap((item) => [String(item.id || '').trim(), String(item.url || '').trim()])
     .filter(Boolean);
+}
+
+function aiNewsUrlsFromRunRows(runRows) {
+  return new Set(runRows
+    .filter((row) => row.key === 'ai_news_tweet_executed_items' || row.key === 'ai_news_tweet_presented_items')
+    .flatMap((row) => aiNewsRefsFromState(safeJsonParse(row.value, row.value)))
+    .filter((value) => /^https?:\/\//u.test(value)));
+}
+
+function isAiNewsTweetMaterial(item, aiNewsTweetUrls = new Set()) {
+  const body = itemBodyText(item);
+  if (body.includes(AI_NEWS_LIST_URL)) return true;
+  for (const url of aiNewsTweetUrls) {
+    if (body.includes(url)) return true;
+  }
+  return false;
 }
 
 async function recordTopic(text) {

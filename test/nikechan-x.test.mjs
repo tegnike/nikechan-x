@@ -72,9 +72,21 @@ test('context materials are partitioned by source mode', () => {
         { content: 'だーちゃん、AIタグの説明です。', url: 'https://x.com/ai_nikechan/status/2', action_type: 'reply' },
         { content: '#ぷにけ の話題で呼んでもらいました。', url: '', action_type: 'reply' },
         { content: '小松菜とキノコで体調を整えました。', url: '', action_type: 'reply' },
+        { content: 'AIニュース専用枠の投稿です。\n\n記事: https://example.com/ai-news\nニュース一覧: https://nikechan.com/ai-news', url: 'https://x.com/ai_nikechan/status/3', action_type: 'tweet' },
       ],
     },
-    runStateRows: { data: [] },
+    runStateRows: {
+      data: [
+        {
+          key: 'ai_news_tweet_executed_items',
+          value: {
+            items: [
+              { id: 'news-1', url: 'https://example.com/ai-news' },
+            ],
+          },
+        },
+      ],
+    },
     publicEpisodes: { data: [] },
     publicNotes: { data: [{ title: 'Hermesの記憶', content: '記憶とプロンプトの設計を整理しました。' }] },
     publicWiki: { data: [] },
@@ -90,6 +102,7 @@ test('context materials are partitioned by source mode', () => {
   assert.match(daily.primary.map((item) => item.text).join('\n'), /小松菜/u);
   assert.match(news.primary.map((item) => item.text).join('\n'), /https:\/\/zenn/u);
   assert.doesNotMatch(news.primary.map((item) => item.text).join('\n'), /AIタグの説明/u);
+  assert.doesNotMatch(news.primary.map((item) => item.text).join('\n'), /nikechan\.com\/ai-news|example\.com\/ai-news/u);
   assert.match(tech.primary.map((item) => `${item.title || ''}\n${item.text || ''}`).join('\n'), /Hermes/u);
   assert.doesNotMatch(tech.primary.map((item) => item.text).join('\n'), /AIタグの説明/u);
 });
@@ -97,11 +110,27 @@ test('context materials are partitioned by source mode', () => {
 test('duplicate reference exposes recent outputs without separate manual list', () => {
   const result = buildDuplicateReference(
     {
-      recentPresentedTopics: [{ text: '前回の候補です。' }],
-      lastExecutedTexts: ['投稿済みです。'],
+      recentPresentedTopics: [
+        { text: '前回の候補です。' },
+        { text: 'AIニュース候補です。\n\n記事: https://example.com/ai-news\nニュース一覧: https://nikechan.com/ai-news' },
+      ],
+      lastExecutedTexts: ['投稿済みです。', '投稿済みAIニュース https://example.com/ai-news'],
     },
     {
-      recentTweets: { data: [{ content: '直近ツイートです。' }] },
+      recentTweets: {
+        data: [
+          { content: '直近ツイートです。' },
+          { content: 'AIニュース専用投稿です。\n\n記事: https://example.com/ai-news\nニュース一覧: https://nikechan.com/ai-news' },
+        ],
+      },
+      runStateRows: {
+        data: [
+          {
+            key: 'ai_news_tweet_executed_items',
+            value: { items: [{ id: 'news-1', url: 'https://example.com/ai-news' }] },
+          },
+        ],
+      },
     },
   );
 
