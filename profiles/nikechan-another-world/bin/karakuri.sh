@@ -15,6 +15,8 @@ usage() {
 Usage: karakuri.sh <command> [arguments]
 
 Commands:
+  login                                           Log in the agent directly
+  logout                                          Log out the agent directly
   get_notification <notification_id>             Open saved notification detail once; starts response timeout without Discord follow-up
   command <notification_id> <command> <params-json>
                                                 Execute one notification.choices command via generic endpoint
@@ -398,6 +400,14 @@ command="$1"
 shift
 
 case "${command}" in
+  login)
+    [ $# -eq 0 ] || { echo "Usage: karakuri.sh login" >&2; exit 1; }
+    do_post "/agents/login" '{}'
+    ;;
+  logout)
+    [ $# -eq 0 ] || { echo "Usage: karakuri.sh logout" >&2; exit 1; }
+    do_post "/agents/logout" '{}'
+    ;;
   get_notification)
     [ $# -eq 1 ] || { echo "Usage: karakuri.sh get_notification <notification_id>" >&2; exit 1; }
     [ -n "$1" ] || { echo "Usage: karakuri.sh get_notification <notification_id>" >&2; exit 1; }

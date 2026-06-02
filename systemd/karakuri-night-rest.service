@@ -1,0 +1,11 @@
+[Unit]
+Description=Karakuri World night rest guard
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/nikechan-x
+ExecStart=/usr/bin/docker exec nikechan-another-world node /profile/scripts/karakuri-night-rest.mjs
+
