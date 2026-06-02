@@ -51,6 +51,7 @@ services:
       - TZ=Europe/Warsaw
       - PATH=/profile/profiles/nikechan-another-world/bin:/usr/local/bin:/usr/bin:/bin
       - DISCORD_ALLOWED_CHANNELS=1483150821372854442,1493132651958112319
+      - HERMES_FRESH_MESSAGE_SESSION_CHANNELS=1493132651958112319
       - DISCORD_HOME_CHANNEL=1483150821372854442
       - DISCORD_HOME_CHANNEL_NAME=nikechan-world
     command:

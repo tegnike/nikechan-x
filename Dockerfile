@@ -24,6 +24,8 @@ RUN apt-get update && apt-get install -y \
 
 COPY patches/hermes-agent/cron-error-deliver.py /tmp/cron-error-deliver.py
 RUN python3 /tmp/cron-error-deliver.py && rm /tmp/cron-error-deliver.py
+COPY patches/hermes-agent/fresh-message-session.py /tmp/fresh-message-session.py
+RUN python3 /tmp/fresh-message-session.py && rm /tmp/fresh-message-session.py
 
 COPY docker-entrypoint.sh /usr/local/bin/nikechan-x-entrypoint
 RUN chmod +x /usr/local/bin/nikechan-x-entrypoint
