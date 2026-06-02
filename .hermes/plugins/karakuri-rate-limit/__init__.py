@@ -14,7 +14,14 @@ STATE_DIR = ROOT / "profiles" / "nikechan-another-world" / "state" / "karakuri-r
 DEFAULT_CHANNEL = "1493132651958112319"
 NOTIFICATION_RE = re.compile(r"\bnotification_id:\s*(notif-[A-Za-z0-9_-]+)\b")
 EXEMPT_RE = re.compile(
-    r"(会話|話しかけ|話しかけられ|発言|返事|返信|譲渡|受け取|transfer|conversation|イベント|event)",
+    r"("
+    r"conversation_(accept|speak|end|leave|stay|reject|join)"
+    r"|transfer_(accept|reject)"
+    r"|会話(リクエスト|招待|への返答|に返答|の返答)"
+    r"|返答してください"
+    r"|次は.+の番"
+    r"|譲渡(の承認|を承認|の拒否|を拒否|を受け取)"
+    r")",
     re.IGNORECASE,
 )
 
