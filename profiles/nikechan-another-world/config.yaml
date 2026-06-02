@@ -64,6 +64,7 @@ display:
       tool_progress: false
 plugins:
   enabled:
+  - karakuri-rate-limit
   - x-approval-router
 skills:
   creation_nudge_interval: 15
