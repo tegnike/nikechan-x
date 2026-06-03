@@ -12,6 +12,7 @@ import {
   isRecentAiNewsItem,
   nextSourceMode,
   parseApprovalReply,
+  tweetWeightedLength,
   validateReleaseModeChange,
 } from '../scripts/nikechan-x.mjs';
 
@@ -151,6 +152,20 @@ test('AI news tweet text uses comment and title URL format', () => {
   assert.doesNotMatch(text, /記事:|ニュース一覧/u);
   assert.equal(guardText(text, { sourceMode: 'news' }).ok, true);
   assert.ok([...text].length <= 280);
+});
+
+test('AI news tweet text counts long URLs with X URL weight', () => {
+  const text = buildAiNewsTweetText({
+    title: 'In2ition AI、常時接続型AIコンパニオン「Iris」を発表',
+    url: 'https://www.prnewswire.com/news-releases/in2ition-ai-launches-iris-the-always-on-ai-companion-that-participates-in-conversations-instead-of-analyzing-them-after-they-end-302789131.html',
+    nike_comment: 'リアルタイム参加型のAIコンパニオンは、運用視点でユーザー体験の自然さを一段高めそう。会話の流れをそのまま活かせる点は、今後のAIキャラクター体験の広がりにもつながりそうです。',
+  });
+
+  assert.doesNotMatch(text, /点…/u);
+  assert.match(text, /広がりにもつながりそうです。/u);
+  assert.equal(guardText(text, { sourceMode: 'news' }).ok, true);
+  assert.ok(tweetWeightedLength(text) <= 280);
+  assert.ok([...text].length > 280);
 });
 
 test('AI news tweet eligibility is limited to items from the past day', () => {

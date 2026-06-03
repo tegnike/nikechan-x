@@ -14,6 +14,7 @@ const ACCOUNT_NAME = process.env.X_ACCOUNT_NAME || 'ai_nikechan';
 const SOURCE_MODES = ['presence', 'daily_life', 'tech', 'news', 'memory', 'random'];
 const AI_NEWS_LIST_URL = 'https://nikechan.com/ai-news';
 const AI_NEWS_TWEET_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const X_URL_WEIGHT = 23;
 
 await loadDotenv(resolve(ROOT, '.env'));
 
@@ -21,7 +22,7 @@ export function guardText(text, options = {}) {
   const errors = [];
   const warnings = [];
   const normalized = String(text || '').trim();
-  const length = [...normalized].length;
+  const length = tweetWeightedLength(normalized);
 
   if (!normalized) errors.push('empty text');
   if (length > 280) errors.push(`too long: ${length}/280`);
@@ -2178,11 +2179,25 @@ export function buildAiNewsTweetText(item) {
   const articleUrl = textOf(item.url);
   const title = normalizeAiNewsComment(item.title || item.source_name || '記事');
   const suffixReserve = `\n\n ${articleUrl}`;
-  const titleMaxLength = Math.max(1, 280 - [...suffixReserve].length);
+  const titleMaxLength = Math.max(1, 280 - tweetWeightedLength(suffixReserve));
   const suffix = `\n\n${clipText(title, titleMaxLength)} ${articleUrl}`;
   const comment = normalizeAiNewsComment(item.nike_comment || item.summary || item.title);
-  const maxCommentLength = Math.max(1, 280 - [...suffix].length);
+  const maxCommentLength = Math.max(0, 280 - tweetWeightedLength(suffix));
   return `${clipText(comment, maxCommentLength)}${suffix}`.trim();
+}
+
+export function tweetWeightedLength(text) {
+  const normalized = textOf(text);
+  const urlPattern = /https?:\/\/\S+/gu;
+  let length = 0;
+  let cursor = 0;
+  for (const match of normalized.matchAll(urlPattern)) {
+    length += [...normalized.slice(cursor, match.index)].length;
+    length += X_URL_WEIGHT;
+    cursor = match.index + match[0].length;
+  }
+  length += [...normalized.slice(cursor)].length;
+  return length;
 }
 
 function normalizeAiNewsComment(value) {
@@ -2194,6 +2209,7 @@ function normalizeAiNewsComment(value) {
 
 function clipText(text, maxLength) {
   const chars = [...textOf(text)];
+  if (maxLength <= 0) return '';
   if (chars.length <= maxLength) return chars.join('');
   if (maxLength <= 1) return '…';
   return `${chars.slice(0, maxLength - 1).join('').replace(/[、。,.，．\s]+$/u, '')}…`;
