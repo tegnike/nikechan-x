@@ -38,8 +38,11 @@ async function main() {
       }
       if (now >= wakeAt) {
         const result = await runKarakuri('login');
+        const nightKey = state.night_key || zonedNightKey(new Date(state.logged_out_at || now));
         await saveState({
           sleeping: false,
+          night_key: nightKey,
+          rest_completed_night_key: nightKey,
           logged_out_at: state.logged_out_at ?? null,
           wake_at: wakeAt.toISOString(),
           logged_in_at: now.toISOString(),
@@ -58,6 +61,12 @@ async function main() {
       return;
     }
 
+    const nightKey = zonedNightKey(now);
+    if (state.rest_completed_night_key === nightKey) {
+      log({ action: 'rest_completed', now: now.toISOString(), night_key: nightKey });
+      return;
+    }
+
     const recentLogs =
       process.env.KARAKURI_NIGHT_REST_ASSUME_IDLE === '1' ? [] : await fetchRecentActivityLogs(now);
     const busy = detectBusy(recentLogs, now);
@@ -70,6 +79,7 @@ async function main() {
     const result = await runKarakuri('logout');
     await saveState({
       sleeping: true,
+      night_key: nightKey,
       logged_out_at: now.toISOString(),
       wake_at: wakeAt.toISOString(),
       logout_result: result,
@@ -168,14 +178,27 @@ async function runKarakuri(command) {
   if (DRY_RUN) {
     return { dry_run: true, command };
   }
-  const { stdout, stderr } = await execFileAsync(KARAKURI_BIN, [command], {
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-  });
-  return {
-    stdout: trimOutput(stdout),
-    stderr: trimOutput(stderr),
-  };
+  try {
+    const { stdout, stderr } = await execFileAsync(KARAKURI_BIN, [command], {
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return {
+      stdout: trimOutput(stdout),
+      stderr: trimOutput(stderr),
+    };
+  } catch (error) {
+    const stdout = trimOutput(error?.stdout);
+    const stderr = trimOutput(error?.stderr);
+    if (command === 'login' && isAlreadyLoggedIn(stdout)) {
+      return {
+        stdout,
+        stderr,
+        treated_as_success: 'already_logged_in',
+      };
+    }
+    throw error;
+  }
 }
 
 async function loadState() {
@@ -211,6 +234,22 @@ function zonedHour(date) {
   return Number(parts.find((part) => part.type === 'hour')?.value);
 }
 
+function zonedNightKey(date) {
+  const hour = zonedHour(date);
+  const keyDate =
+    NIGHT_START_HOUR > NIGHT_END_HOUR && hour < NIGHT_END_HOUR
+      ? new Date(date.getTime() - 24 * 60 * 60 * 1000)
+      : date;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(keyDate);
+  const value = (type) => parts.find((part) => part.type === type)?.value;
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
 function normalizeParsed(value) {
   if (typeof value === 'string') {
     try {
@@ -231,6 +270,15 @@ function parseApiResult(value) {
     }
   }
   return value && typeof value === 'object' ? value : null;
+}
+
+function isAlreadyLoggedIn(value) {
+  const parsed = parseApiResult(value);
+  return (
+    parsed?.error === 'state_conflict' &&
+    typeof parsed?.message === 'string' &&
+    parsed.message.includes('already logged in')
+  );
 }
 
 function intEnv(name, fallback) {
