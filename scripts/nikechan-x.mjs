@@ -2171,7 +2171,7 @@ async function selectAiNewsTweetItem(limit = 30) {
 }
 
 export function isRecentAiNewsItem(item, nowMs = Date.now(), maxAgeMs = AI_NEWS_TWEET_MAX_AGE_MS) {
-  const timestamp = Date.parse(item?.published_at || item?.created_at || '');
+  const timestamp = Date.parse(item?.created_at || item?.published_at || '');
   return Number.isFinite(timestamp) && nowMs - timestamp < maxAgeMs;
 }
 
