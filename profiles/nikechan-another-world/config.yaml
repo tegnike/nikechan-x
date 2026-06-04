@@ -63,8 +63,7 @@ display:
     discord:
       tool_progress: false
 plugins:
-  enabled:
-  - x-approval-router
+  enabled: []
 skills:
   creation_nudge_interval: 15
   platform_disabled:
