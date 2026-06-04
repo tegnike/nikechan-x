@@ -1,6 +1,0 @@
-name: karakuri-rate-limit
-version: "1.0.0"
-description: Rate-limit Karakuri World Discord notifications before agent dispatch.
-author: nikechan
-provides_hooks:
-  - pre_gateway_dispatch

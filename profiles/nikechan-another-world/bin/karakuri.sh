@@ -114,60 +114,6 @@ karakuri_lock_key() {
   printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'
 }
 
-karakuri_action_rate_limit_dir() {
-  printf '%s\n' "${KARAKURI_ACTION_RATE_LIMIT_DIR:-/profile/profiles/nikechan-another-world/state/karakuri-rate-limit}"
-}
-
-is_rate_limited_command() {
-  case "$1" in
-    move|action|wait|use_item)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-claim_action_rate_limit() {
-  local command_name="$1"
-  local cooldown="${KARAKURI_ACTION_COOLDOWN_SECONDS:-300}"
-  local state_dir state_path now last next_allowed remaining tmp
-  if ! is_rate_limited_command "$command_name"; then
-    return 0
-  fi
-  if ! [[ "$cooldown" =~ ^[0-9]+$ ]] || [ "$cooldown" -le 0 ]; then
-    return 0
-  fi
-  state_dir="$(karakuri_action_rate_limit_dir)"
-  mkdir -p "$state_dir"
-  state_path="${state_dir}/last-action.json"
-  now="$(date +%s)"
-  last="0"
-  if [ -f "$state_path" ]; then
-    last="$(jq -r '.last_action_epoch // 0' "$state_path" 2>/dev/null || printf '0')"
-  fi
-  if [[ "$last" =~ ^[0-9]+$ ]]; then
-    next_allowed=$((last + cooldown))
-    if [ "$now" -lt "$next_allowed" ]; then
-      remaining=$((next_allowed - now))
-      jq -nc \
-        --arg command "$command_name" \
-        --argjson cooldown_seconds "$cooldown" \
-        --argjson remaining_seconds "$remaining" \
-        '{error: "karakuri_action_rate_limited", command: $command, cooldown_seconds: $cooldown_seconds, remaining_seconds: $remaining_seconds, message: "A movement/action/wait command was blocked by the local cooldown."}'
-      return 1
-    fi
-  fi
-  tmp="${state_path}.tmp.$$"
-  jq -nc \
-    --arg command "$command_name" \
-    --arg last_action_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    --argjson last_action_epoch "$now" \
-    '{last_action_epoch: $last_action_epoch, last_action_at: $last_action_at, command: $command}' > "$tmp" && mv "$tmp" "$state_path"
-  return 0
-}
-
 claim_notification_command() {
   local notification_id="$1"
   local command_name="$2"
@@ -321,9 +267,6 @@ do_agent_command() {
   local command_name="$2"
   local params_json="$3"
   local request_body response claim_path
-  if ! claim_action_rate_limit "$command_name"; then
-    return 1
-  fi
   if ! claim_path="$(claim_notification_command "$notification_id" "$command_name" "$params_json")"; then
     already_claimed_response "$claim_path"
     return 1
