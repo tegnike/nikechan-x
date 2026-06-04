@@ -92,9 +92,9 @@ def _target_channels() -> set[str]:
 
 def _cooldown_seconds() -> int:
     try:
-        return int(os.getenv("KARAKURI_RATE_LIMIT_SECONDS", "600"))
+        return int(os.getenv("KARAKURI_RATE_LIMIT_SECONDS", "300"))
     except ValueError:
-        return 600
+        return 300
 
 
 def _extract_notification_id(text: str) -> str | None:

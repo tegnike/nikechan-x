@@ -131,7 +131,7 @@ is_rate_limited_command() {
 
 claim_action_rate_limit() {
   local command_name="$1"
-  local cooldown="${KARAKURI_ACTION_COOLDOWN_SECONDS:-600}"
+  local cooldown="${KARAKURI_ACTION_COOLDOWN_SECONDS:-300}"
   local state_dir state_path now last next_allowed remaining tmp
   if ! is_rate_limited_command "$command_name"; then
     return 0
