@@ -20,48 +20,17 @@ Commands:
   get_notification <notification_id>             Open saved notification detail once; starts response timeout without Discord follow-up
   command <notification_id> <command> <params-json>
                                                 Execute one notification.choices command via generic endpoint
-  move <notification_id> <target_node_id>        Move to a target node
-  get_perception <notification_id>               Print refreshed perception inline; follow-up choices via Discord
-  get_available_actions <notification_id>        Print available actions inline; follow-up choices via Discord
-  action <notification_id> <action_id> [duration_minutes]
-                                                Execute an action
-  use_item <notification_id> <item_id>           Use an item from inventory
-  wait <notification_id> <duration>              Wait (1-6, in 10-minute units)
-  transfer <notification_id> <target_agent_id> --item <item_id> [--quantity <n>]
-  transfer <notification_id> <target_agent_id> --money <amount>
-                                                Start a transfer of one item (default quantity 1) or money to a nearby agent
-  transfer_accept <notification_id>              Accept the pending transfer offer (resolved from agent state)
-  transfer_reject <notification_id>              Reject the pending transfer offer (resolved from agent state)
-  conversation_start <notification_id> <target_agent_id> <message>
-                                                Start a conversation
-  conversation_accept <notification_id> <message>
-                                                Accept a conversation and reply
-  conversation_reject <notification_id>          Reject a conversation
-  conversation_join <notification_id> <conversation_id>
-                                                Join an active conversation on the next turn boundary
-  conversation_stay <notification_id>            Stay after an inactive-check prompt
-  conversation_leave <notification_id> [message] Leave after an inactive-check prompt
-  conversation_speak <notification_id> <next_speaker_agent_id> <message...>
-      [--item <item_id> [--quantity <n>] | --money <amount> | --accept | --reject]
-                                                Speak in a conversation. Trailing flags optionally
-                                                attach a transfer (item or money) or transfer_response.
-  conversation_end <notification_id> <next_speaker_agent_id> <message...> [--accept | --reject]
-                                                End/leave a conversation. Trailing --accept/--reject
-                                                resolves a pending transfer offer; new transfers
-                                                cannot be opened from end.
-  get_map <notification_id>                      Print the full map inline; follow-up choices via Discord
-  get_world_agents <notification_id>             Print all agent states inline; follow-up choices via Discord
-  get_status <notification_id>                   Print own status inline; follow-up choices via Discord
-  get_nearby_agents <notification_id>            Print nearby agents inline; follow-up choices via Discord
-  get_active_conversations <notification_id>     Print joinable active conversations inline; follow-up choices via Discord
-  get_event <notification_id>                    Print active persistent server events inline; follow-up choices via Discord
+  Strict mode is enabled by default. Use get_notification, then execute only
+  a command present in notification.choices[] via the generic command endpoint.
+  Older direct helpers such as move/wait/get_status are disabled unless
+  KARAKURI_STRICT_GENERIC_COMMANDS=0.
 
 get_notification opens the saved notification JSON for a Discord notification_id and does not create an immediate Discord follow-up. It is safe to retry; response timeout starts only on the first fetch.
 
-Every command except get_notification requires the same notification_id that was already fetched with get_notification. Prefer the generic "command" wrapper: merge choices[].params with your filled required_params into params-json, then execute at most one command for the notification. Specific convenience wrappers call the same generic endpoint.
-
-Info/read-style commands (get_perception/get_available_actions/get_map/get_world_agents/get_status/get_nearby_agents/get_active_conversations/get_event)
-print the HTTP response inline as command + data; only follow-up choices arrive via Discord.
+Every command except get_notification requires the same notification_id that was
+already fetched with get_notification. Merge choices[].params with your filled
+required_params into params-json, then execute at most one generic command for
+the notification.
 EOF
 }
 
@@ -114,6 +83,7 @@ karakuri_lock_key() {
   printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'
 }
 
+# Only duplicate executions of the same notification_id are blocked.
 claim_notification_command() {
   local notification_id="$1"
   local command_name="$2"
@@ -261,12 +231,37 @@ do_post() {
   do_request -X POST -H "${AUTH_HEADER}" -H "Content-Type: application/json" -d "$2" "${BASE_URL}$1"
 }
 
+validate_notification_choice_command() {
+  local notification_id="$1"
+  local command_name="$2"
+  local notification_body suggestions
+  if ! notification_body="$(do_get "/agents/notifications/$notification_id")"; then
+    printf '%s\n' "$notification_body"
+    return 1
+  fi
+  if printf '%s\n' "$notification_body" | jq -e --arg command "$command_name" '
+      ((.notification.choices // .choices // []) | map(.command) | index($command)) != null
+    ' >/dev/null; then
+    return 0
+  fi
+  suggestions="$(printf '%s\n' "$notification_body" | jq -c '[.notification.choices[]?.command] // []' 2>/dev/null || printf '[]')"
+  jq -nc \
+    --arg notification_id "$notification_id" \
+    --arg command "$command_name" \
+    --argjson suggestions "$suggestions" \
+    '{error: "notification_command_not_in_choices", message: "Command is not present in notification.choices; no API command was sent.", details: {notification_id: $notification_id, command: $command, allowed_commands: $suggestions}}'
+  return 1
+}
+
 do_agent_command() {
   require_notification_id "$1"
   local notification_id="$1"
   local command_name="$2"
   local params_json="$3"
   local request_body response claim_path
+  if ! validate_notification_choice_command "$notification_id" "$command_name"; then
+    return 1
+  fi
   if ! claim_path="$(claim_notification_command "$notification_id" "$command_name" "$params_json")"; then
     already_claimed_response "$claim_path"
     return 1
@@ -396,8 +391,23 @@ build_conversation_payload() {
   fi
 }
 
-command="$1"
+command="${1:-help}"
 shift
+
+if [ "${KARAKURI_STRICT_GENERIC_COMMANDS:-1}" = "1" ]; then
+  case "${command}" in
+    help|-h|--help|login|logout|get_notification|command)
+      ;;
+    notif-*)
+      echo "Error: notification_id was passed as the karakuri.sh command. Use: karakuri.sh command <notification_id> <choices[].command> '<params-json>'" >&2
+      exit 1
+      ;;
+    *)
+      echo "Error: direct karakuri.sh '${command}' is disabled. Use only: karakuri.sh get_notification <notification_id>, then karakuri.sh command <notification_id> <choices[].command> '<params-json>'" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 case "${command}" in
   login)

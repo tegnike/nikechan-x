@@ -10,7 +10,7 @@ allowed-tools: Bash(karakuri.sh *)
 
 1. Discord 通知を受け取り、本文の `notification_id: notif-...` だけを読む。`notification_id` がないログアウト完了通知はそこで終了し、何もしない
 2. まず `karakuri.sh get_notification <notification_id>` を実行し、保存済み通知詳細を取得する（これは1アクションに数えない）
-3. 返却された `created_at` / `expires_at` / `notification` と `nikechan_preprocess` を確認する。`nikechan_preprocess.context.pending_commitments` / `recent_memory_entries` / `recent_activity_logs` は意思決定前の文脈として使う
+3. 返却された `created_at` / `expires_at` / `notification` と `nikechan_preprocess` を確認する。`nikechan_preprocess.context.pending_commitments` / `recent_memory_entries` / `recent_activity_logs` / `unified_world_context` は意思決定前の文脈として使う
 4. `notification.choices` 配列から最大1つ選ぶ。`choices: []` なら何もしない
 5. 選んだ `choices[]` の `command` と、`choices[].params` に自分で埋めた `required_params` / `param_schema` の値を merge した `params` で、`karakuri.sh command <notification_id> <command> '<params-json>'` を最大1回だけ実行する
 6. `karakuri.sh command` の後処理で activity log / short memory への保存が自動実行される
@@ -36,6 +36,21 @@ allowed-tools: Bash(karakuri.sh *)
 
 この skill が使う安定した入口は次の2つだけ。
 
+**実行してよい `karakuri.sh` の形は、この2種類だけ。**
+
+```bash
+karakuri.sh get_notification <notification_id>
+karakuri.sh command <notification_id> <choices[].command> '<params-json>'
+```
+
+禁止:
+
+- `karakuri.sh <notification_id>` のように通知IDを先頭コマンドとして渡す
+- `karakuri.sh move ...` / `karakuri.sh wait ...` / `karakuri.sh get_status ...` などの個別便利コマンドを直接呼ぶ
+- `notification.choices[]` にない command 名を推測して実行する
+- `get_notification` のあとに、複数の `command` を連続実行してリカバリする
+- エラー後に `notification` / `move` / `wait` / `action` / `<notification_id>` などの別形式を試す
+
 ### get_notification
 
 ```bash
@@ -44,7 +59,9 @@ karakuri.sh get_notification <notification_id>
 
 保存済み通知 JSON を取得する。`created_at` / `expires_at` / `notification` を確認し、`notification.choices` を読む。retry-safe / idempotent なので、同じ通知を再取得しても refetch error にはならない。応答 timeout / reminder 用 timer は初回取得時だけ開始される。
 
-`karakuri.sh` は取得結果に `nikechan_preprocess` を付加する。ここには通知の構造化結果、最近の行動ログ、短期記憶、未完了の約束が含まれる。行動判断ではこの文脈を優先して読む。
+`karakuri.sh` は取得結果に `nikechan_preprocess` を付加する。ここには通知の構造化結果、最近の行動ログ、短期記憶、未完了の約束、redaction済み統合World文脈が含まれる。行動判断では通知・選択肢・未完了の約束を優先し、統合World文脈は生活背景としてだけ読む。
+
+からくりの相手は、同じ場所で会い、移動・会話・約束・行動を共有した `embodied_world_acquaintance` として扱う。ELYTHの投稿本文やSNS上の相手発言は、からくり内の発話へ直接持ち込まない。
 
 ### command
 
@@ -52,11 +69,11 @@ karakuri.sh get_notification <notification_id>
 karakuri.sh command <notification_id> <command> '<params-json>'
 ```
 
-`notification.choices[]` から選んだ command を実行する唯一の入口。`params-json` は JSON object にする。
+`notification.choices[]` から選んだ command を実行する唯一の入口。`params-json` は必ず1個の有効な JSON object にする。値がない場合は `'{}'` を渡し、前後に説明文、コメント、余分な文字列を付けない。
 
 `karakuri.sh` は command 成功/失敗後に後処理を行い、`karakuri_activity_logs` と短期記憶へ結果を保存する。
 
-通知に出る各種の行動名や情報取得名は、独立した skill 用コマンドではなく `choices[].command` に入る command 値である。個別コマンド名や個別パラメータ仕様はこの skill に固定せず、必ず取得した通知の `choices[]`、`required_params`、`param_schema.description`、およびサーバーの OpenAPI schema を正とする。
+通知に出る各種の行動名や情報取得名は、独立した skill 用コマンドではなく `choices[].command` に入る command 値である。`move` / `wait` / `get_status` / `get_available_actions` なども、直接 `karakuri.sh move ...` のようには呼ばず、必ず `karakuri.sh command <notification_id> <choices[].command> '<params-json>'` の形で呼ぶ。個別コマンド名や個別パラメータ仕様はこの skill に固定せず、必ず取得した通知の `choices[]`、`required_params`、`param_schema.description`、およびサーバーの OpenAPI schema を正とする。
 
 ## パラメータの決め方
 
@@ -65,12 +82,13 @@ karakuri.sh command <notification_id> <command> '<params-json>'
 3. `param_schema` があれば、各 field の `description` / `type` / `enum` / `items` を読んで値を作る
 4. 通知の `choices[]` にない command を推測で実行しない
 5. `params` に入れる値だけを JSON object にし、`notification_id` は top-level 引数として渡す
+6. terminalへ渡す `params-json` は必ず single quote で囲んだ1個のJSON objectにする。JSON text以外を混ぜない
 
 情報取得の command はレスポンスに `command` と `data` を含む実データを直接返す。後続 Discord 通知は choices のみなので、レスポンスを読んだ後は次の通知を待つ。情報取得結果を根拠に続けて別 command を実行してはならない。
 
 ## エラー時
 
-エラーが返った場合は `hint` と `suggestions` を確認する。`notification_stale` の場合は details の `latest_notification_id` があればそれを使い、なければ新しい通知を待つ。どのエラーでも、同じ通知で別 command を連続実行してリカバリしようとしない。
+エラーが返った場合は `hint` と `suggestions` を確認する。`notification_stale` の場合は details の `latest_notification_id` があればそれを使い、なければ新しい通知を待つ。どのエラーでも、同じ通知で別 command を連続実行してリカバリしようとしない。候補外 command、直接 helper、通知IDを先頭に置く形式、JSONを直すための再実行も試さず、Discord報告を返して終了する。
 
 ## Discord報告
 
