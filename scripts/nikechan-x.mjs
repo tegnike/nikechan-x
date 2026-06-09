@@ -15,6 +15,9 @@ const SOURCE_MODES = ['presence', 'daily_life', 'tech', 'news', 'memory', 'rando
 const AI_NEWS_LIST_URL = 'https://nikechan.com/ai-news';
 const AI_NEWS_TWEET_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const X_URL_WEIGHT = 23;
+const DISCORD_THREAD_RETENTION_MS = 24 * 60 * 60 * 1000;
+const DISCORD_THREAD_REGISTRY_PATH = resolve(ROOT, 'discord_threads.json');
+const DISCORD_THREAD_NAME_PREFIXES = ['X候補', 'Xネタ', 'Xメンション', 'Xハッシュタグ', 'AITuberニュース', 'Xレポート'];
 
 await loadDotenv(resolve(ROOT, '.env'));
 
@@ -183,6 +186,9 @@ async function main() {
       case 'thread-context':
         await commandThreadContext(readOptions(args));
         break;
+      case 'cleanup-threads':
+        await commandCleanupThreads(readOptions(args));
+        break;
       case 'mention-resolve':
         await commandMentionResolve(readOptions(args));
         break;
@@ -249,6 +255,7 @@ Commands:
   mention-propose --items-json '{"items":[...]}'
   notify-mention-pending [--channel <discord_channel_id>] [--thread]
   thread-context --thread-id <discord_thread_id>
+  cleanup-threads [--channel <discord_channel_id>]
   mention-resolve --text <discord reply> [--notify]
   mention-approve --ids m1,m2
   mention-cancel [--reason "..."]
@@ -607,10 +614,11 @@ async function commandPending(options) {
 }
 
 async function commandNotifyPending(options) {
-  const pending = await readPending();
-  if (!pending) throw new Error('no pending self-tweet');
   const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
   if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
+  if (options.thread) await cleanupDiscordApprovalThreads(channel);
+  const pending = await readPending();
+  if (!pending) throw new Error('no pending self-tweet');
   const content = [
     'Xセルフツイート候補です。このスレッドで「1で」「2で」「修正: ...」「見送り」のように返信してください。',
     '',
@@ -771,6 +779,13 @@ async function commandThreadContext(options) {
   if (!context.match && options.strict !== 'false') process.exitCode = 2;
 }
 
+async function commandCleanupThreads(options) {
+  const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
+  if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
+  const result = await cleanupDiscordApprovalThreads(channel);
+  printJsonOrMarkdown(result, options);
+}
+
 async function commandMentionPending(options) {
   const pending = await readMentionPending();
   if (!pending) {
@@ -782,10 +797,11 @@ async function commandMentionPending(options) {
 }
 
 async function commandNotifyMentionPending(options) {
-  const pending = await readMentionPending();
-  if (!pending) throw new Error('no pending mention-reaction');
   const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
   if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
+  if (options.thread) await cleanupDiscordApprovalThreads(channel);
+  const pending = await readMentionPending();
+  if (!pending) throw new Error('no pending mention-reaction');
   if (options.thread && (pending.threadId || pending.notifiedAt) && options.force !== true && options.force !== 'true') {
     await recordActivity('notify_skipped', {
       pendingId: pending.id,
@@ -2711,6 +2727,234 @@ function truncate(text, max) {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
+async function cleanupDiscordApprovalThreads(parentChannel) {
+  const registry = await readDiscordThreadRegistry();
+  const discovered = await discoverDiscordApprovalThreads(parentChannel).catch((error) => {
+    console.error(`Discord thread discovery failed: ${error?.message || error}`);
+    return [];
+  });
+  let discoveredCount = 0;
+  for (const record of discovered) {
+    if (!registry[record.threadId]) discoveredCount += 1;
+    registry[record.threadId] = {
+      ...registry[record.threadId],
+      ...record,
+    };
+  }
+
+  const retained = {};
+  const now = Date.now();
+  let deleted = 0;
+  let missing = 0;
+  let failed = 0;
+  for (const record of Object.values(registry)) {
+    const createdAtMs = Date.parse(record.createdAt || '') || snowflakeTimestampMs(record.threadId);
+    if (!createdAtMs || now - createdAtMs <= DISCORD_THREAD_RETENTION_MS) {
+      retained[record.threadId] = record;
+      continue;
+    }
+    const result = await deleteDiscordThread(record.threadId);
+    if (result.deleted) {
+      deleted += 1;
+      await clearPendingForThread(record.threadId);
+      continue;
+    }
+    if (result.missing) {
+      missing += 1;
+      await clearPendingForThread(record.threadId);
+      continue;
+    }
+    failed += 1;
+    retained[record.threadId] = record;
+  }
+
+  await writeDiscordThreadRegistry(retained);
+  return {
+    ok: failed === 0,
+    channel: parentChannel,
+    discovered: discoveredCount,
+    deleted,
+    missing,
+    failed,
+    retained: Object.keys(retained).length,
+  };
+}
+
+async function rememberDiscordThread(thread, parentChannel) {
+  if (!thread?.id) return;
+  const registry = await readDiscordThreadRegistry();
+  registry[String(thread.id)] = {
+    threadId: String(thread.id),
+    parentChannelId: String(parentChannel || thread.parent_id || ''),
+    name: String(thread.name || ''),
+    createdAt: new Date(snowflakeTimestampMs(thread.id) || Date.now()).toISOString(),
+  };
+  await writeDiscordThreadRegistry(registry);
+}
+
+async function readDiscordThreadRegistry() {
+  const raw = await readJson(DISCORD_THREAD_REGISTRY_PATH, null);
+  if (Array.isArray(raw)) {
+    return Object.fromEntries(
+      raw
+        .map((threadId) => String(threadId || '').trim())
+        .filter(Boolean)
+        .map((threadId) => [
+          threadId,
+          {
+            threadId,
+            parentChannelId: '',
+            name: '',
+            createdAt: new Date(snowflakeTimestampMs(threadId) || Date.now()).toISOString(),
+          },
+        ]),
+    );
+  }
+  const source = raw?.threads && typeof raw.threads === 'object' ? raw.threads : raw;
+  if (!source || typeof source !== 'object') return {};
+  const normalized = {};
+  for (const [threadId, record] of Object.entries(source)) {
+    if (!threadId || !record || typeof record !== 'object') continue;
+    normalized[threadId] = {
+      threadId,
+      parentChannelId: String(record.parentChannelId || record.parent_id || ''),
+      name: String(record.name || ''),
+      createdAt: String(
+        record.createdAt || new Date(snowflakeTimestampMs(threadId) || Date.now()).toISOString(),
+      ),
+    };
+  }
+  return normalized;
+}
+
+async function writeDiscordThreadRegistry(threads) {
+  await writeJsonAtomic(DISCORD_THREAD_REGISTRY_PATH, {
+    updatedAt: new Date().toISOString(),
+    retentionHours: 24,
+    threads,
+  });
+}
+
+async function discoverDiscordApprovalThreads(parentChannel) {
+  const records = [];
+  const parent = await discordApi(`/channels/${encodeURIComponent(parentChannel)}`).catch((error) => {
+    console.error(`Discord parent channel fetch failed: ${error?.message || error}`);
+    return null;
+  });
+  const guildId = parent?.body?.guild_id;
+  if (guildId) {
+    const active = await discordApi(`/guilds/${encodeURIComponent(guildId)}/threads/active`).catch((error) => {
+      console.error(`Discord active thread discovery failed: ${error?.message || error}`);
+      return null;
+    });
+    for (const thread of Array.isArray(active?.body?.threads) ? active.body.threads : []) {
+      if (
+        String(thread.parent_id || '') === String(parentChannel) &&
+        isDiscordApprovalThreadName(thread.name)
+      ) {
+        records.push(discordThreadRecord(thread, parentChannel));
+      }
+    }
+  }
+
+  let before;
+  for (let page = 0; page < 50; page += 1) {
+    const query = new URLSearchParams({ limit: '100' });
+    if (before) query.set('before', before);
+    const archived = await discordApi(
+      `/channels/${encodeURIComponent(parentChannel)}/threads/archived/public?${query.toString()}`,
+    ).catch((error) => {
+      console.error(`Discord archived thread discovery failed: ${error?.message || error}`);
+      return null;
+    });
+    const threads = Array.isArray(archived?.body?.threads) ? archived.body.threads : [];
+    if (!threads.length) break;
+    for (const thread of threads) {
+      if (isDiscordApprovalThreadName(thread.name)) records.push(discordThreadRecord(thread, parentChannel));
+    }
+    if (!archived?.body?.has_more) break;
+    const oldestArchive = threads
+      .map((thread) => Date.parse(thread.thread_metadata?.archive_timestamp || ''))
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b)[0];
+    if (!oldestArchive) break;
+    before = new Date(oldestArchive - 1).toISOString();
+  }
+  return records;
+}
+
+function discordThreadRecord(thread, parentChannel) {
+  const threadId = String(thread.id || '');
+  return {
+    threadId,
+    parentChannelId: String(parentChannel || thread.parent_id || ''),
+    name: String(thread.name || ''),
+    createdAt: new Date(snowflakeTimestampMs(threadId) || Date.now()).toISOString(),
+  };
+}
+
+function isDiscordApprovalThreadName(name) {
+  const value = String(name || '');
+  return DISCORD_THREAD_NAME_PREFIXES.some((prefix) => value === prefix || value.startsWith(`${prefix} `));
+}
+
+async function deleteDiscordThread(threadId) {
+  try {
+    const result = await discordApi(`/channels/${encodeURIComponent(threadId)}`, { method: 'DELETE' });
+    return { deleted: result.status >= 200 && result.status < 300, missing: false };
+  } catch (error) {
+    if (error?.status === 404) return { deleted: false, missing: true };
+    console.error(`Discord thread delete failed ${threadId}: ${error?.message || error}`);
+    return { deleted: false, missing: false };
+  }
+}
+
+async function clearPendingForThread(threadId) {
+  const [selfTweet, mentionReaction] = await Promise.all([readPending(), readMentionPending()]);
+  if (selfTweet?.threadId && String(selfTweet.threadId) === String(threadId)) {
+    await removePending();
+  }
+  if (mentionReaction?.threadId && String(mentionReaction.threadId) === String(threadId)) {
+    await archiveMentionPending(mentionReaction, 'expired-thread');
+  }
+}
+
+async function discordApi(path, options = {}) {
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) throw new Error('missing DISCORD_BOT_TOKEN');
+  const response = await fetch(`https://discord.com/api/v10${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bot ${token}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { raw: text };
+  }
+  if (!response.ok) {
+    const error = new Error(`Discord API failed ${response.status}: ${truncate(text, 500)}`);
+    error.status = response.status;
+    error.body = body;
+    throw error;
+  }
+  return { status: response.status, body, text };
+}
+
+function snowflakeTimestampMs(value) {
+  try {
+    return Number((BigInt(String(value)) >> 22n) + 1420070400000n);
+  } catch {
+    return 0;
+  }
+}
+
+
 async function sendDiscordMessage(channel, content) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) throw new Error('missing DISCORD_BOT_TOKEN');
@@ -2785,6 +3029,7 @@ async function sendDiscordThreadReport(channel, content, options = {}) {
 async function createDiscordThread(channel, name) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) throw new Error('missing DISCORD_BOT_TOKEN');
+  await cleanupDiscordApprovalThreads(channel);
   const response = await fetch(
     `https://discord.com/api/v10/channels/${encodeURIComponent(channel)}/threads`,
     {
@@ -2810,6 +3055,7 @@ async function createDiscordThread(channel, name) {
   if (!response.ok) {
     throw new Error(`Discord thread API failed ${response.status}: ${truncate(text, 500)}`);
   }
+  await rememberDiscordThread(parsed, channel);
   return parsed;
 }
 
