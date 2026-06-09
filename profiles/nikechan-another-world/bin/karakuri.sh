@@ -394,16 +394,70 @@ build_conversation_payload() {
 command="${1:-help}"
 shift
 
+# Compatibility recovery for common LLM invocation mistakes. These aliases do not
+# bypass notification choice validation or duplicate notification locking.
+case "${command}" in
+  notif-*)
+    set -- "${command}" "$@"
+    command="get_notification"
+    ;;
+  notification|notif)
+    if [ $# -ge 1 ] && [[ "$1" == notif-* ]]; then
+      notification_id="$1"
+      shift
+      set -- "${notification_id}"
+      command="get_notification"
+    fi
+    ;;
+  command)
+    if [ $# -ge 2 ] && { [ "$2" = "notification" ] || [ "$2" = "notif" ] || [ "$2" = "get_notification" ]; }; then
+      notification_id="$1"
+      set -- "${notification_id}"
+      command="get_notification"
+    fi
+    ;;
+  get|open|show)
+    if [ $# -ge 1 ] && [[ "$1" == notif-* ]]; then
+      notification_id="$1"
+      shift
+      set -- "${notification_id}"
+      command="get_notification"
+    fi
+    ;;
+  direct|run)
+    if [ $# -ge 1 ]; then
+      command="$1"
+      shift
+    fi
+    ;;
+  check)
+    if [ $# -ge 2 ] && { [ "$1" = "notification" ] || [ "$1" = "notif" ]; } && [[ "$2" == notif-* ]]; then
+      notification_id="$2"
+      set -- "${notification_id}"
+      command="get_notification"
+    fi
+    ;;
+  notification_id=notif-*)
+    notification_id="${command#notification_id=}"
+    set -- "${notification_id}"
+    command="get_notification"
+    ;;
+  karakuri-world|karakuri)
+    if [ $# -ge 1 ] && [[ "$1" == notif-* ]]; then
+      notification_id="$1"
+      shift
+      set -- "${notification_id}"
+      command="get_notification"
+    fi
+    ;;
+esac
+
 if [ "${KARAKURI_STRICT_GENERIC_COMMANDS:-1}" = "1" ]; then
   case "${command}" in
-    help|-h|--help|login|logout|get_notification|command)
-      ;;
-    notif-*)
-      echo "Error: notification_id was passed as the karakuri.sh command. Use: karakuri.sh command <notification_id> <choices[].command> '<params-json>'" >&2
-      exit 1
+    help|-h|--help|login|logout|get_notification|command|move|get_perception|get_available_actions|action|use_item|wait|transfer|transfer_accept|transfer_reject|conversation_start|conversation_accept|conversation_reject|conversation_join|conversation_stay|conversation_leave|conversation_speak|conversation_end|get_map|get_world_agents|get_status|get_nearby_agents|get_active_conversations|get_event)
       ;;
     *)
-      echo "Error: direct karakuri.sh '${command}' is disabled. Use only: karakuri.sh get_notification <notification_id>, then karakuri.sh command <notification_id> <choices[].command> '<params-json>'" >&2
+      echo "Error: unsupported karakuri.sh '${command}'. Use: karakuri.sh get_notification <notification_id>, then karakuri.sh command <notification_id> <choices[].command> '<params-json>'" >&2
       exit 1
       ;;
   esac
