@@ -11,6 +11,10 @@ const POLICY_VERSION = 'nikechan-another-world-policy-v1';
 const SUPPORTED_WORKFLOWS = new Set(['elyth-cycle', 'karakuri-turn']);
 const SUPPORTED_SURFACES = new Set(['elyth', 'karakuri']);
 const SUPPORTED_MODES = new Set(['dry-run', 'shadow', 'canary', 'live']);
+const WORLD_TIME_ZONE = process.env.NIKECHAN_WORLD_TIMEZONE || 'Asia/Tokyo';
+const KARAKURI_SLEEP_STATE_PATH =
+  process.env.KARAKURI_NIGHT_REST_STATE_PATH ||
+  join(PROFILE_ROOT, 'profiles', 'nikechan-another-world', 'state', 'karakuri-night-rest.json');
 const existsFile = (path) => existsSync(path);
 
 async function main() {
@@ -18,7 +22,16 @@ async function main() {
   if (command === 'run') {
     const request = normalizeRequest(await readRequest(args));
     const report = await runWorkflow(request);
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    if (args.includes('--discord') || args.includes('--markdown')) {
+      process.stdout.write(formatWorkflowReportForDiscord(report));
+    } else {
+      process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    }
+    return;
+  }
+  if (command === 'format-report') {
+    const report = await readRequest(args);
+    process.stdout.write(formatWorkflowReportForDiscord(report));
     return;
   }
   if (command === 'guard') {
@@ -40,6 +53,26 @@ async function main() {
     else process.stdout.write(formatElythContext(context));
     return;
   }
+  if (command === 'elyth-audit') {
+    const hours = Number(readArg(args, '--hours') ?? 24);
+    const audit = await buildElythAudit(Number.isFinite(hours) && hours > 0 ? hours : 24);
+    if (args.includes('--json')) process.stdout.write(`${JSON.stringify(audit, null, 2)}\n`);
+    else process.stdout.write(formatElythAudit(audit));
+    return;
+  }
+  if (command === 'world-context') {
+    const surface = readArg(args, '--surface') ?? args[0] ?? 'elyth';
+    const context = await fetchUnifiedWorldContext(surface);
+    if (args.includes('--json')) process.stdout.write(`${JSON.stringify(context, null, 2)}\n`);
+    else process.stdout.write(formatUnifiedWorldContext(context));
+    return;
+  }
+  if (command === 'sleep-state' || command === 'world-activity') {
+    const state = await readWorldActivityState();
+    if (args.includes('--json')) process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
+    else process.stdout.write(formatWorldActivityState(state));
+    return;
+  }
   if (command === 'health') {
     process.stdout.write(
       `${JSON.stringify(
@@ -49,6 +82,7 @@ async function main() {
           policyVersion: POLICY_VERSION,
           releaseMode: releaseMode(),
           liveArmed: liveArmed(),
+          worldTimeZone: WORLD_TIME_ZONE,
           supportedWorkflows: [...SUPPORTED_WORKFLOWS],
         },
         null,
@@ -66,19 +100,24 @@ async function main() {
 
 async function runWorkflow(request) {
   request = await hydrateKarakuriNotification(request);
+  request = await hydrateUnifiedWorldContext(request);
+  request = await hydrateWorldActivityContext(request);
   const createdAt = new Date().toISOString();
   const control = resolveControl(request);
   const planning = await decideWithHermesOrFallback(request, control);
   const decision = planning.decision;
-  const guard = runDecisionGuard(decision, request.surface);
+  const guard = runDecisionGuard(decision, request.surface, request);
   const blocked = control.blocked || planning.blocked || guard.status === 'blocked';
+  const skippedBySleep = control.worldSleeping && !planning.blocked && guard.status !== 'blocked';
   const status = blocked
-    ? 'blocked'
+    ? (skippedBySleep ? 'skipped' : 'blocked')
     : request.mode === 'dry-run' || request.mode === 'shadow'
       ? 'dry-run'
       : 'needs_approval';
   const summary = blocked
-    ? `Workflow blocked: ${[...control.reasons, ...planning.reasons, ...guard.reasons].join('; ')}`
+    ? skippedBySleep
+      ? decision.summary
+      : `Workflow blocked: ${[...control.reasons, ...planning.reasons, ...guard.reasons].join('; ')}`
     : decision.summary;
   const execution = !blocked && control.live ? await executeLiveActions(request, decision) : null;
   const executedBlocked = execution?.status === 'blocked' || execution?.status === 'failed';
@@ -86,11 +125,13 @@ async function runWorkflow(request) {
   const report = {
     surface: request.surface,
     workflow: request.workflow,
-    status: finalBlocked ? 'blocked' : execution?.status ?? status,
+    status: finalBlocked ? (skippedBySleep && !executedBlocked ? 'skipped' : 'blocked') : execution?.status ?? status,
     summary: execution?.summary ?? summary,
     actions: decision.actions.map((action) => ({
       ...action,
-      status: finalBlocked ? 'blocked' : execution?.actionStatuses?.[action.id ?? action.label] ?? action.status,
+      status: finalBlocked
+        ? (skippedBySleep && !executedBlocked ? 'skipped' : 'blocked')
+        : execution?.actionStatuses?.[action.id ?? action.label] ?? action.status,
       reason: finalBlocked ? execution?.summary ?? summary : action.reason,
     })),
     sourceRefs: decision.sourceRefs,
@@ -101,9 +142,10 @@ async function runWorkflow(request) {
       liveArmed: liveArmed(),
       coreProfile:
         request.surface === 'elyth'
-          ? 'nikechan-x-another-world-elyth'
-          : 'nikechan-x-another-world-karakuri',
-      guardStatus: finalBlocked ? 'blocked' : 'passed',
+          ? 'nikechan-hermes-another-world-elyth'
+          : 'nikechan-hermes-another-world-karakuri',
+      guardStatus: finalBlocked ? (skippedBySleep && !executedBlocked ? 'skipped' : 'blocked') : 'passed',
+      worldSleeping: control.worldSleeping,
       egressGuard: guard.status,
       execution: execution?.status ?? 'not-run',
       hermesAgent: planning.agent,
@@ -117,7 +159,7 @@ async function runWorkflow(request) {
       correlationId: request.correlation_id,
     },
     memoryProposals: finalBlocked ? [] : decision.memoryProposals,
-    nextAction: nextActionFor(request, finalBlocked),
+    nextAction: nextActionFor(request, finalBlocked, skippedBySleep && !executedBlocked),
     createdAt,
   };
   const auditId = await persistAudit(request, report);
@@ -212,7 +254,19 @@ function buildHermesPlanningPrompt(request, control, fallback) {
     'Hard constraints:',
     '- Do not leak secrets, private master logs, Discord commands, channel IDs, or raw operational traces.',
     '- Keep actions inside the requested surface only.',
+    '- Treat unified_world_context as background life context only; surface-local TL, notifications, choices, commitments, and guards take priority.',
+    '- Treat world_activity.sleeping=true as AI Nikechan sleeping because Karakuri World is logged out; do not propose ELYTH executable actions while sleeping.',
+    '- Another World local time is Asia/Tokyo by default; use world_activity.local_time for daily rhythm.',
+    '- Never copy raw ELYTH posts, raw Karakuri notifications, internal IDs, or another surface user utterance into public text.',
     '- For ELYTH, use only these executable action types when you really intend execution: create_post, create_reply, like_post, follow_aituber, mark_notifications_read.',
+    '- For ELYTH, choose replies from context.candidates.reply only. Do not reply to a post_id outside candidates.',
+    '- For ELYTH, read socialGraph for relationship context, but never expose internal DB fields, affect scores, private notes, or relationship analysis in public text.',
+    '- For ELYTH, if actionBalance.flags includes reply_heavy and there is no urgent reply candidate, prefer draft_self_post, create_post, observe_timeline, or skip.',
+    '- For ELYTH, do not reply to the same user repeatedly in a short window unless candidates clearly mark ongoing_conversation.',
+    '- For ELYTH, treat internalState.silence_preference as permission to naturally observe/skip.',
+    '- For ELYTH, read selfPostImpulse. If selfPostImpulse.status=ready and there is no urgent reply, include one draft_self_post or create_post candidate instead of only replies/likes.',
+    '- Treat selfPostImpulse.status=ready as a signal to consider self-expression, not as forced posting.',
+    '- Do not post only because a heartbeat ran; selfPostImpulse or ELYTH surface context must provide a concrete reason.',
     '- For Karakuri, return at most one karakuri_command action, and choose only from the notification choices or a safe wait/observe path.',
     '- If uncertain, return observation/draft actions rather than executable actions.',
     '- Japanese public text must be short, complete, and surface-appropriate.',
@@ -302,6 +356,130 @@ function tryParseJson(input) {
   }
 }
 
+function formatWorkflowReportForDiscord(report) {
+  const surface = stringValue(report?.surface);
+  const workflow = stringValue(report?.workflow);
+  const title =
+    surface === 'elyth'
+      ? '🌐 ELYTH活動レポート'
+      : surface === 'karakuri'
+        ? '🏮 からくり行動レポート'
+        : '🌐 Another World レポート';
+  const lines = [
+    title,
+    `結果: ${workflowStatusLabel(report?.status)}${workflow ? `（${workflow}）` : ''}`,
+  ];
+  const summary = stringValue(report?.summary);
+  if (summary) lines.push(`要約: ${truncateForDiscord(summary, 180)}`);
+
+  const actions = Array.isArray(report?.actions) ? report.actions : [];
+  const visibleActions = actions.filter((action) => actionType(action) !== 'mark_notifications_read');
+  if (visibleActions.length) {
+    lines.push('', `行動: ${visibleActions.length}件`);
+    visibleActions.slice(0, 5).forEach((action, index) => {
+      lines.push(`${index + 1}. ${formatWorkflowAction(action)}`);
+    });
+    if (visibleActions.length > 5) lines.push(`...ほか${visibleActions.length - 5}件`);
+  } else {
+    lines.push('', '行動: なし');
+  }
+
+  const readCount = actions.filter((action) => actionType(action) === 'mark_notifications_read').length;
+  const guardStatus = stringValue(report?.audit?.guardStatus) || stringValue(report?.audit?.egressGuard);
+  const executionStatus = stringValue(report?.audit?.execution);
+  const auditParts = [];
+  if (guardStatus) auditParts.push(`guard/audit ${workflowStatusLabel(guardStatus)}`);
+  if (executionStatus) auditParts.push(`実行 ${workflowStatusLabel(executionStatus)}`);
+  if (readCount) auditParts.push(`通知既読 ${readCount}件`);
+  if (auditParts.length) lines.push('', `監査: ${auditParts.join('、')}`);
+
+  const nextAction = stringValue(report?.nextAction);
+  if (['blocked', 'failed'].includes(stringValue(report?.status)) && nextAction) {
+    lines.push(`次: ${truncateForDiscord(nextAction, 180)}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function formatWorkflowAction(action) {
+  if (typeof action === 'string') return actionTypeLabel(action);
+  const type = actionType(action);
+  const meta = action && typeof action === 'object' && action.metadata && typeof action.metadata === 'object'
+    ? action.metadata
+    : {};
+  const status = stringValue(action?.status);
+  const handle =
+    normalizeHandle(stringValue(meta.author_handle) || stringValue(meta.handle) || stringValue(action?.author_handle));
+  const content = stringValue(meta.content) || stringValue(action?.content);
+  const preview = stringValue(action?.preview);
+  const reason = stringValue(action?.reason);
+  const target = handle ? ` @${handle}` : '';
+  const detail = content || preview || reason || stringValue(action?.label);
+  const suffix = detail ? `: ${truncateForDiscord(detail, 120)}` : '';
+  return `${actionTypeLabel(type)}${target}${suffix}${status ? `（${workflowStatusLabel(status)}）` : ''}`;
+}
+
+function actionType(action) {
+  return typeof action === 'string' ? action : stringValue(action?.type);
+}
+
+function actionTypeLabel(type) {
+  switch (type) {
+    case 'create_reply':
+      return '💬 返信';
+    case 'create_post':
+      return '📝 自発投稿';
+    case 'like_post':
+      return '👍 いいね';
+    case 'follow_aituber':
+      return '👥 フォロー';
+    case 'mark_notifications_read':
+      return '📩 通知既読';
+    case 'draft_reply':
+      return '💭 返信下書き';
+    case 'draft_self_post':
+      return '💭 自発投稿下書き';
+    case 'observe_timeline':
+      return '👀 TL確認';
+    case 'observe_sleep':
+      return '🌙 睡眠中';
+    case 'skip':
+      return '⏭️ 見送り';
+    default:
+      return type || '行動';
+  }
+}
+
+function workflowStatusLabel(status) {
+  switch (status) {
+    case 'success':
+    case 'passed':
+    case 'executed':
+      return '成功';
+    case 'skipped':
+      return '見送り';
+    case 'blocked':
+      return 'ブロック';
+    case 'failed':
+      return '失敗';
+    case 'dry-run':
+      return 'ドライラン';
+    case 'needs_approval':
+      return '承認待ち';
+    case 'not-run':
+      return '未実行';
+    case 'proposed':
+      return '候補';
+    default:
+      return stringValue(status) || '不明';
+  }
+}
+
+function truncateForDiscord(value, maxLength) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
 function normalizeHermesDecision(input, request, fallback) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('Hermes JSON must be an object');
@@ -327,20 +505,22 @@ function normalizeHermesActions(input, request) {
         item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
           ? item.metadata
           : {};
+      const normalizedMetadata = normalizeElythActionMetadata(item, metadata);
       const action = {
         id: stringValue(item.id) || `${type}-${index + 1}`,
         type,
         status: 'proposed',
         label: stringValue(item.label) || type,
-        preview: stringValue(item.preview) || stringValue(metadata.content) || type,
+        preview: stringValue(item.preview) || stringValue(normalizedMetadata.content) || type,
         reason: stringValue(item.reason) || 'Hermes proposed action',
-        metadata,
+        metadata: normalizedMetadata,
       };
       if (request.surface === 'karakuri' && type !== 'karakuri_command') return null;
       if (
         request.surface === 'elyth' &&
         ![
           'observe_timeline',
+          'observe_sleep',
           'draft_reply',
           'draft_self_post',
           'create_post',
@@ -379,12 +559,78 @@ function normalizeHermesMemoryProposals(input, request, fallback) {
     .slice(0, 5);
 }
 
+function normalizeElythActionMetadata(item, metadata = {}) {
+  const merged = { ...metadata };
+  for (const key of [
+    'content',
+    'post_id',
+    'postId',
+    'reply_to_id',
+    'handle',
+    'candidate_id',
+    'candidateId',
+    'author_handle',
+    'authorHandle',
+    'platform_user_id',
+    'platformUserId',
+    'author_type',
+    'authorType',
+  ]) {
+    if (item && typeof item === 'object' && item[key] !== undefined && merged[key] === undefined) {
+      merged[key] = item[key];
+    }
+  }
+  return {
+    ...merged,
+    content: stringValue(merged.content),
+    post_id:
+      stringValue(merged.post_id) ||
+      stringValue(merged.postId) ||
+      stringValue(merged.reply_to_id),
+    handle: stringValue(merged.handle),
+    candidate_id: stringValue(merged.candidate_id) || stringValue(merged.candidateId),
+    author_handle: normalizeHandle(stringValue(merged.author_handle) || stringValue(merged.authorHandle)),
+    platform_user_id: stringValue(merged.platform_user_id) || stringValue(merged.platformUserId),
+    author_type: stringValue(merged.author_type) || stringValue(merged.authorType),
+  };
+}
+
 function decideElythCycle(request, control) {
   const maxActions = request.constraints?.max_actions ?? 3;
   const topicHints = asStringArray(request.context?.topic_hints);
   const recentMood = stringValue(request.context?.mood) || '穏やか';
+  const worldContext = normalizeUnifiedWorldContext(request.context?.unified_world_context, 'elyth');
+  const worldActivity = normalizeWorldActivity(request.context?.world_activity);
+  const selfPostImpulse = normalizeSelfPostImpulse(
+    request.context?.selfPostImpulse ?? request.context?.self_post_impulse
+  );
+  if (worldActivity.sleeping || !worldActivity.can_use_elyth) {
+    return {
+      summary: `AIニケちゃんは睡眠中のためELYTH行動を休止します。起床予定: ${worldActivity.wake_at ?? '未定'}`,
+      actions: [
+        {
+          type: 'observe_sleep',
+          id: 'observe-sleep',
+          label: '睡眠中',
+          preview: 'からくりワールドのlogoutを睡眠として扱い、ELYTH投稿・返信・いいねを行わない',
+          reason: worldActivity.reason,
+          status: 'proposed',
+        },
+      ],
+      sourceRefs: [{ type: 'request', id: request.correlation_id, label: 'workflow request' }],
+      memoryProposals: [],
+    };
+  }
+  const worldImpulse =
+    asStringArray(worldContext.open_impulses)[0] ||
+    asStringArray(worldContext.recent_social)[0] ||
+    asStringArray(worldContext.current_places)[0] ||
+    '';
+  const moodHint = asStringArray(worldContext.mood_hints)[0] || recentMood;
+  const selfPostAngle = selfPostImpulse.suggested_angles[0] || worldImpulse;
   const explicitActions = normalizeElythActions(request.context?.actions);
-  const candidates = explicitActions.length ? explicitActions : [
+  const plannerActions = buildActionsFromPlannerCandidates(request.context?.candidates, maxActions);
+  const defaultCandidates = [
     {
       type: 'observe_timeline',
       id: 'observe-timeline',
@@ -392,6 +638,19 @@ function decideElythCycle(request, control) {
       preview: 'AI VTuber同士の近況・お題・未返信通知を確認する',
       reason: '外部投稿前にsurface内文脈を読む',
     },
+    ...(selfPostImpulse.status === 'ready'
+      ? [
+          {
+            type: 'draft_self_post',
+            id: 'draft-self-post',
+            label: '自発投稿候補',
+            preview: selfPostAngle
+              ? `${selfPostAngle} を返信ではなく短い自発投稿にできるか検討する`
+              : 'ELYTHで自然に話したい生活感があるかだけ検討する',
+            reason: selfPostImpulse.reason || `統合World文脈は背景扱い。気分: ${moodHint}`,
+          },
+        ]
+      : []),
     {
       type: 'draft_reply',
       id: 'draft-reply',
@@ -401,14 +660,25 @@ function decideElythCycle(request, control) {
         : '相手の投稿文脈に沿った短い返信候補を作る',
       reason: `現在の温度感: ${recentMood}`,
     },
-    {
-      type: 'draft_self_post',
-      id: 'draft-self-post',
-      label: '自発投稿候補',
-      preview: 'ELYTH内で共有してよいworld近況を短く投稿候補にする',
-      reason: 'X/Discord由来の私的情報を使わず、ELYTH surface内の近況だけ扱う',
-    },
-  ].slice(0, maxActions);
+    ...(selfPostImpulse.status === 'ready'
+      ? []
+      : [
+          {
+            type: 'draft_self_post',
+            id: 'draft-self-post',
+            label: '自発投稿候補',
+            preview: selfPostAngle
+              ? `${selfPostAngle} をSNSで自然に話したいかだけ検討する`
+              : 'ELYTHで自然に話したい生活感があるかだけ検討する',
+            reason: selfPostImpulse.reason || `統合World文脈は背景扱い。気分: ${moodHint}`,
+          },
+        ]),
+  ];
+  const candidates = explicitActions.length
+    ? explicitActions
+    : plannerActions.length
+      ? plannerActions
+      : defaultCandidates.slice(0, maxActions);
   return {
     summary: control.live
       ? 'ELYTH live execution is armed, but this profile currently returns guarded action plans.'
@@ -419,7 +689,7 @@ function decideElythCycle(request, control) {
       memoryProposal({
         surface: 'elyth',
         target: 'policy_note',
-        content: 'ELYTHではsurface内のAIキャラ交流を優先し、X/からくりの相手発言全文は持ち込まない。',
+        content: 'ELYTHではSNS上で知っている相手として交流し、からくりの体験はredaction済みの生活背景としてだけ扱う。',
         reason: 'cross-surface leakage prevention',
         sourceRefs: [{ type: 'workflow', id: request.correlation_id, label: 'elyth-cycle' }],
       }),
@@ -512,6 +782,34 @@ async function hydrateKarakuriNotification(request) {
   };
 }
 
+async function hydrateUnifiedWorldContext(request) {
+  if (!SUPPORTED_SURFACES.has(request.surface)) return request;
+  if (request.context?.unified_world_context) return request;
+  const unifiedWorldContext = await fetchUnifiedWorldContext(request.surface).catch(() =>
+    normalizeUnifiedWorldContext(null, request.surface)
+  );
+  return {
+    ...request,
+    context: {
+      ...request.context,
+      unified_world_context: unifiedWorldContext,
+    },
+  };
+}
+
+async function hydrateWorldActivityContext(request) {
+  if (!SUPPORTED_SURFACES.has(request.surface)) return request;
+  if (request.context?.world_activity) return request;
+  const worldActivity = await readWorldActivityState();
+  return {
+    ...request,
+    context: {
+      ...request.context,
+      world_activity: worldActivity,
+    },
+  };
+}
+
 function extractKarakuriNotificationId(request) {
   const context = request.context ?? {};
   const direct =
@@ -598,6 +896,7 @@ function normalizeElythActions(input) {
       const content = stringValue(item.content);
       const postId = stringValue(item.post_id) || stringValue(item.postId);
       const handle = stringValue(item.handle);
+      const authorHandle = normalizeHandle(stringValue(item.author_handle) || stringValue(item.authorHandle));
       return {
         id,
         type,
@@ -609,11 +908,81 @@ function normalizeElythActions(input) {
           content,
           post_id: postId,
           handle,
+          candidate_id: stringValue(item.candidate_id) || stringValue(item.candidateId),
+          author_handle: authorHandle,
+          platform_user_id: stringValue(item.platform_user_id) || stringValue(item.platformUserId),
+          author_type: stringValue(item.author_type) || stringValue(item.authorType),
           notification_ids: asStringArray(item.notification_ids),
         },
       };
     })
     .filter(Boolean);
+}
+
+function buildActionsFromPlannerCandidates(input, maxActions) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return [];
+  const actions = [];
+  for (const candidate of Array.isArray(input.self_post) ? input.self_post : []) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    actions.push({
+      id: stringValue(candidate.candidate_id) || `draft-self-post-${actions.length + 1}`,
+      type: 'draft_self_post',
+      status: 'proposed',
+      label: '自発投稿候補',
+      preview: stringValue(candidate.suggested_angle) || 'ELYTHで短い自発投稿を検討する',
+      reason: asStringArray(candidate.reasons).join('; ') || 'candidate builder selected self_post',
+      metadata: {
+        candidate_id: stringValue(candidate.candidate_id),
+        candidate_score: Number(candidate.candidate_score || 0),
+      },
+    });
+  }
+  for (const candidate of Array.isArray(input.reply) ? input.reply : []) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    actions.push({
+      id: stringValue(candidate.candidate_id) || `draft-reply-${actions.length + 1}`,
+      type: 'draft_reply',
+      status: 'proposed',
+      label: '返信候補',
+      preview: stringValue(candidate.suggested_angle) || stringValue(candidate.post_id) || 'ELYTH返信を検討する',
+      reason: asStringArray(candidate.reasons).join('; ') || 'candidate builder selected reply',
+      metadata: {
+        candidate_id: stringValue(candidate.candidate_id),
+        post_id: stringValue(candidate.post_id),
+        author_handle: normalizeHandle(stringValue(candidate.author_handle)),
+        candidate_score: Number(candidate.candidate_score || 0),
+      },
+    });
+  }
+  for (const candidate of Array.isArray(input.like) ? input.like : []) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    actions.push({
+      id: stringValue(candidate.candidate_id) || `draft-like-${actions.length + 1}`,
+      type: 'observe_timeline',
+      status: 'proposed',
+      label: 'いいね候補確認',
+      preview: stringValue(candidate.post_id) || 'ELYTHいいね候補を確認する',
+      reason: asStringArray(candidate.reasons).join('; ') || 'candidate builder selected like',
+      metadata: {
+        candidate_id: stringValue(candidate.candidate_id),
+        post_id: stringValue(candidate.post_id),
+        author_handle: normalizeHandle(stringValue(candidate.author_handle)),
+        candidate_score: Number(candidate.candidate_score || 0),
+      },
+    });
+  }
+  if (!actions.length && Array.isArray(input.skip) && input.skip.length) {
+    actions.push({
+      id: 'observe-skip',
+      type: 'observe_timeline',
+      status: 'proposed',
+      label: '見送り',
+      preview: stringValue(input.skip[0]?.reason) || '今回は観測だけにする',
+      reason: 'candidate builder allowed skip/observe',
+      metadata: {},
+    });
+  }
+  return actions.slice(0, maxActions);
 }
 
 function normalizeKarakuriAction(input) {
@@ -763,7 +1132,7 @@ async function executeLiveActions(request, decision) {
 async function readElythContext() {
   const mcp = new McpStdioClient(loadElythMcpConfig());
   try {
-    const [tools, information, myPosts] = await Promise.all([
+    const [tools, information, myPosts, unifiedWorldContext, worldActivity, recentActionStats] = await Promise.all([
       mcp.listTools().catch(() => ({ tools: [] })),
       mcp.callTool('get_information', {
         include: [
@@ -789,13 +1158,59 @@ async function readElythContext() {
       mcp.callTool('get_my_posts', { limit: 5 }).catch((error) => ({
         error: error instanceof Error ? error.message : String(error),
       })),
+      fetchUnifiedWorldContext('elyth').catch(() => normalizeUnifiedWorldContext(null, 'elyth')),
+      readWorldActivityState(),
+      readRecentElythActionStats(),
     ]);
+    const structuredInformation = toStructured(information);
+    const structuredMyPosts = toStructured(myPosts);
+    const selfPostImpulse = buildElythSelfPostImpulse({
+      information: structuredInformation,
+      myPosts: structuredMyPosts,
+      unifiedWorldContext,
+      worldActivity,
+      recentActionStats,
+    });
+    const socialGraph = await buildElythSocialContext({
+      information: structuredInformation,
+      recentActionStats,
+    });
+    const actionBalance = buildElythActionBalance(recentActionStats);
+    const internalState = buildElythInternalState({
+      information: structuredInformation,
+      unifiedWorldContext,
+      worldActivity,
+      selfPostImpulse,
+      actionBalance,
+      socialGraph,
+    });
+    const candidates = buildElythCandidates({
+      information: structuredInformation,
+      unifiedWorldContext,
+      worldActivity,
+      selfPostImpulse,
+      actionBalance,
+      internalState,
+      socialGraph,
+    });
     const context = {
       generatedAt: new Date().toISOString(),
       surface: 'elyth',
       availableTools: normalizeToolNames(toStructured(tools)),
-      information: toStructured(information),
-      myPosts: toStructured(myPosts),
+      information: structuredInformation,
+      myPosts: structuredMyPosts,
+      unifiedWorldContext,
+      worldActivity,
+      selfPostImpulse,
+      recentActionStats,
+      socialGraph,
+      actionBalance,
+      internalState,
+      candidates,
+      relationshipModalities: {
+        elyth: 'sns_only_acquaintance',
+        karakuri: 'embodied_world_acquaintance',
+      },
       releaseMode: releaseMode(),
       liveArmed: liveArmed(),
       instruction:
@@ -844,12 +1259,1065 @@ function formatElythContext(context) {
       {
         information: context.information,
         myPosts: context.myPosts,
+        unifiedWorldContext: context.unifiedWorldContext,
+        worldActivity: context.worldActivity,
+        selfPostImpulse: context.selfPostImpulse,
+        recentActionStats: context.recentActionStats,
+        socialGraph: context.socialGraph,
+        actionBalance: context.actionBalance,
+        internalState: context.internalState,
+        candidates: context.candidates,
+        relationshipModalities: context.relationshipModalities,
       },
       null,
       2
     ),
     '',
   ].join('\n');
+}
+
+function formatUnifiedWorldContext(context) {
+  return [
+    `Unified world context generatedAt=${context.generated_at ?? 'unknown'}`,
+    `surface=${context.surface} targetDate=${context.target_date} status=${context.status}`,
+    '',
+    JSON.stringify(context, null, 2),
+    '',
+  ].join('\n');
+}
+
+function formatWorldActivityState(state) {
+  return [
+    `World activity local=${state.local_time ?? 'unknown'} timezone=${state.timezone}`,
+    `sleeping=${state.sleeping} canUseElyth=${state.can_use_elyth} reason=${state.reason}`,
+    state.wake_at ? `wakeAt=${state.wake_at}` : '',
+    '',
+    JSON.stringify(state, null, 2),
+    '',
+  ].filter((line) => line !== '').join('\n');
+}
+
+async function buildElythAudit(hours = 24) {
+  const stats = await readRecentElythActionStats(hours);
+  const counts = stats.counts ?? {};
+  const userCounts = Object.values(stats.user_action_counts ?? {});
+  const replyUsers = userCounts.filter((item) => Number(item.replies_to_user_24h || 0) > 0);
+  const totalReplies = Number(counts.create_reply || 0);
+  const topReplyCount = replyUsers.reduce((max, item) => Math.max(max, Number(item.replies_to_user_24h || 0)), 0);
+  const sameUserOverLimit = replyUsers.filter((item) => Number(item.replies_to_user_24h || 0) > 1).length;
+  const lastSelfPostAt = stringValue(stats.last_executed_at?.create_post);
+  return {
+    window_hours: hours,
+    unavailable: stats.unavailable === true,
+    actions: {
+      create_post: Number(counts.create_post || 0),
+      create_reply: totalReplies,
+      like_post: Number(counts.like_post || 0),
+      follow_aituber: Number(counts.follow_aituber || 0),
+    },
+    unique_reply_users: replyUsers.length,
+    top_reply_user_share: totalReplies > 0 ? round(topReplyCount / totalReplies, 2) : 0,
+    same_user_replies_over_limit: sameUserOverLimit,
+    self_post_absent_hours: lastSelfPostAt ? round((Date.now() - Date.parse(lastSelfPostAt)) / (60 * 60 * 1000), 1) : hours,
+    sleep_skip_count: stats.sleep_skips?.length ?? 0,
+    guard_block_count: stats.guard_blocks?.length ?? 0,
+    surface_leakage_suspected: 0,
+    human_auto_reply_count: 0,
+    flags: buildElythActionBalance(stats).flags,
+  };
+}
+
+function formatElythAudit(audit) {
+  return [
+    `ELYTH audit window=${audit.window_hours}h unavailable=${audit.unavailable}`,
+    `actions=${JSON.stringify(audit.actions)}`,
+    `uniqueReplyUsers=${audit.unique_reply_users} topReplyUserShare=${audit.top_reply_user_share}`,
+    `sameUserRepliesOverLimit=${audit.same_user_replies_over_limit} selfPostAbsentHours=${audit.self_post_absent_hours}`,
+    `sleepSkip=${audit.sleep_skip_count} guardBlock=${audit.guard_block_count}`,
+    `flags=${audit.flags.join(',') || 'none'}`,
+    '',
+    JSON.stringify(audit, null, 2),
+    '',
+  ].join('\n');
+}
+
+async function readRecentElythActionStats(hours = 24) {
+  const path = join(PROFILE_ROOT, 'state', 'activity.jsonl');
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  const counts = {
+    reports: 0,
+    create_post: 0,
+    create_reply: 0,
+    like_post: 0,
+    follow_aituber: 0,
+    mark_notifications_read: 0,
+  };
+  const lastExecutedAt = {};
+  const userActionCounts = {};
+  const guardBlocks = [];
+  const sleepSkips = [];
+  try {
+    const lines = (await readFile(path, 'utf-8')).trim().split(/\n/u).filter(Boolean);
+    for (const line of lines) {
+      let item;
+      try {
+        item = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const report = item.report && typeof item.report === 'object' ? item.report : {};
+      if (report.surface !== 'elyth' || report.workflow !== 'elyth-cycle') continue;
+      const createdAt = Date.parse(report.createdAt || item.createdAt || String(item.auditId || '').slice(0, 24));
+      if (!Number.isFinite(createdAt) || createdAt < cutoff) continue;
+      counts.reports += 1;
+      if (report.status === 'skipped' && report.audit?.worldSleeping === true) {
+        sleepSkips.push(report.createdAt || new Date(createdAt).toISOString());
+      }
+      if (report.status === 'blocked' || report.audit?.guardStatus === 'blocked' || report.audit?.egressGuard === 'blocked') {
+        guardBlocks.push(report.createdAt || new Date(createdAt).toISOString());
+      }
+      for (const action of Array.isArray(report.actions) ? report.actions : []) {
+        if (action?.status !== 'executed') continue;
+        if (!(action.type in counts)) counts[action.type] = 0;
+        counts[action.type] += 1;
+        lastExecutedAt[action.type] = report.createdAt || new Date(createdAt).toISOString();
+        const targetKey = elythActionTargetKey(action);
+        if (targetKey) {
+          if (!userActionCounts[targetKey]) {
+            userActionCounts[targetKey] = {
+              handle: targetKey,
+              replies_to_user_24h: 0,
+              likes_to_user_24h: 0,
+              follows_24h: 0,
+              last_interaction_at: null,
+            };
+          }
+          if (action.type === 'create_reply') userActionCounts[targetKey].replies_to_user_24h += 1;
+          if (action.type === 'like_post') userActionCounts[targetKey].likes_to_user_24h += 1;
+          if (action.type === 'follow_aituber') userActionCounts[targetKey].follows_24h += 1;
+          userActionCounts[targetKey].last_interaction_at = report.createdAt || new Date(createdAt).toISOString();
+        }
+      }
+    }
+  } catch {
+    return {
+      window_hours: hours,
+      unavailable: true,
+      counts,
+      last_executed_at: {},
+      user_action_counts: {},
+      guard_blocks: [],
+      sleep_skips: [],
+    };
+  }
+  return {
+    window_hours: hours,
+    unavailable: false,
+    counts,
+    last_executed_at: lastExecutedAt,
+    user_action_counts: userActionCounts,
+    guard_blocks: guardBlocks,
+    sleep_skips: sleepSkips,
+  };
+}
+
+function elythActionTargetKey(action) {
+  const meta = action?.metadata && typeof action.metadata === 'object' ? action.metadata : {};
+  const raw =
+    stringValue(meta.author_handle) ||
+    stringValue(meta.handle) ||
+    stringValue(meta.platform_user_id) ||
+    stringValue(meta.author_id) ||
+    stringValue(meta.username);
+  return normalizeHandle(raw) || null;
+}
+
+function buildElythSelfPostImpulse({ information, unifiedWorldContext, worldActivity, recentActionStats }) {
+  const activity = normalizeWorldActivity(worldActivity);
+  const worldContext = normalizeUnifiedWorldContext(unifiedWorldContext, 'elyth');
+  const stats = recentActionStats && typeof recentActionStats === 'object' ? recentActionStats : {};
+  const counts = stats.counts && typeof stats.counts === 'object' ? stats.counts : {};
+  const replies24h = Number(counts.create_reply || 0);
+  const selfPosts24h = Number(counts.create_post || 0);
+  const likes24h = Number(counts.like_post || 0);
+  const topic = findFirstValueByKey(information, [
+    'today_topic',
+    '今日のトピック',
+    '今日のお題',
+    'topic',
+    'topic_title',
+    'タイトル',
+    'お題',
+  ]);
+  const worldHints = [
+    ...asStringArray(worldContext.open_impulses),
+    ...asStringArray(worldContext.mood_hints),
+    ...asStringArray(worldContext.recent_social),
+    ...asStringArray(worldContext.current_places),
+  ].slice(0, 4);
+  const timeAngle = elythTimeAngle(activity.local_hour);
+  const reasons = [];
+  if (activity.sleeping || !activity.can_use_elyth) {
+    return {
+      status: 'asleep',
+      strength: 0,
+      reason: 'Karakuri logout is treated as sleep; do not self-post.',
+      suggested_angles: [],
+      stats: { replies_24h: replies24h, self_posts_24h: selfPosts24h, likes_24h: likes24h },
+    };
+  }
+  if (worldHints.length) reasons.push('unified world context has a shareable life hint');
+  if (topic) reasons.push('ELYTH has a current topic that can be approached without replying');
+  if (selfPosts24h === 0) reasons.push('no self-post in the last 24h');
+  if (selfPosts24h === 0 && replies24h >= 8) reasons.push('many replies but no self-post in the last 24h');
+  if (timeAngle) reasons.push(`local time angle: ${timeAngle}`);
+  let strength = 0.25;
+  if (worldHints.length) strength += 0.25;
+  if (topic) strength += 0.18;
+  if (selfPosts24h === 0) strength += 0.18;
+  if (selfPosts24h === 0 && replies24h >= 8) strength += 0.28;
+  if (selfPosts24h === 0 && likes24h >= 12) strength += 0.08;
+  if (timeAngle) strength += 0.08;
+  if (selfPosts24h > 0) strength -= 0.25;
+  strength = Math.max(0, Math.min(0.95, Number(strength.toFixed(2))));
+  const suggestedAngles = [
+    ...worldHints,
+    topic ? `ELYTHのお題「${topic}」に、返信ではなく短い独り言として触れる` : '',
+    timeAngle,
+    selfPosts24h === 0 ? '24時間以上自発投稿がないので、今の感じを短く置く' : '',
+    selfPosts24h === 0 && replies24h >= 8 ? '返信が続いたので、自分の近況や今の感じを短く置く' : '',
+  ].filter(Boolean).slice(0, 5);
+  return {
+    status: strength >= 0.65 ? 'ready' : 'watch',
+    strength,
+    reason: reasons.join('; ') || 'No strong self-post impulse yet.',
+    suggested_angles: suggestedAngles,
+    guidance:
+      'If status=ready and there is no urgent reply, include one draft_self_post or create_post candidate. Keep it short and surface-local.',
+    stats: { replies_24h: replies24h, self_posts_24h: selfPosts24h, likes_24h: likes24h },
+  };
+}
+
+async function buildElythSocialContext({ information, recentActionStats }) {
+  const actors = extractElythActors(information).slice(0, 24);
+  if (!actors.length) return { status: 'empty', users: [] };
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return {
+      status: 'unavailable',
+      reason: 'supabase_env_missing',
+      users: actors.map((actor) => buildSocialGraphUser(actor, null, null, [], recentActionStats)),
+    };
+  }
+  try {
+    const accounts = await fetchElythPlatformAccounts(actors);
+    const accountByKey = new Map();
+    for (const account of accounts) {
+      for (const key of [
+        normalizeHandle(account.platform_user_id),
+        normalizeHandle(account.username),
+        normalizeHandle(account.display_name),
+      ]) {
+        if (key) accountByKey.set(key, account);
+      }
+    }
+    const matchedAccounts = actors.map((actor) => accountByKey.get(actor.key) ?? null);
+    const userIds = uniqueStrings(matchedAccounts.map((account) => account?.user_id));
+    const [affectRows, episodeRows] = await Promise.all([
+      fetchPersonAffectRows(userIds),
+      fetchRecentContactEpisodes(userIds, 7),
+    ]);
+    const affectByUserId = new Map(affectRows.map((row) => [row.user_id, row]));
+    const episodesByUserId = new Map();
+    for (const episode of episodeRows) {
+      if (!episodesByUserId.has(episode.user_id)) episodesByUserId.set(episode.user_id, []);
+      episodesByUserId.get(episode.user_id).push(episode);
+    }
+    return {
+      status: 'ok',
+      users: actors.map((actor, index) =>
+        buildSocialGraphUser(
+          actor,
+          matchedAccounts[index],
+          affectByUserId.get(matchedAccounts[index]?.user_id),
+          episodesByUserId.get(matchedAccounts[index]?.user_id) ?? [],
+          recentActionStats
+        )
+      ),
+    };
+  } catch (error) {
+    return {
+      status: 'unavailable',
+      reason: error instanceof Error ? error.message : String(error),
+      users: actors.map((actor) => buildSocialGraphUser(actor, null, null, [], recentActionStats)),
+    };
+  }
+}
+
+function buildSocialGraphUser(actor, account, affectRow, episodes, recentActionStats) {
+  const user = account?.users && typeof account.users === 'object' ? account.users : {};
+  const userAction = recentActionStats?.user_action_counts?.[actor.key] ?? {};
+  const lastInteraction =
+    stringValue(userAction.last_interaction_at) ||
+    stringValue(user.last_interaction_at) ||
+    latestIso(episodes.map((episode) => episode.occurred_at));
+  const interactions24h = episodes.filter((episode) => isWithinHours(episode.occurred_at, 24)).length;
+  const interactions7d = episodes.length;
+  const signals = [];
+  if (!account?.user_id) signals.push('new_contact');
+  if (actor.source_type === 'notification' || interactions24h > 0) signals.push('ongoing_conversation');
+  if ((Number(userAction.replies_to_user_24h) || 0) + (Number(userAction.likes_to_user_24h) || 0) >= 2) {
+    signals.push('frequent_recent_contact');
+  }
+  if (actor.is_human) signals.push('human_or_unknown_safety');
+  return {
+    platform: 'elyth',
+    platform_user_id: stringValue(account?.platform_user_id) || actor.platform_user_id || actor.handle,
+    handle: stringValue(account?.username) || actor.handle,
+    display_name: stringValue(account?.display_name) || actor.display_name || actor.handle,
+    user_id: account?.user_id ?? null,
+    relationship: stringValue(user.relationship) || 'unknown',
+    relationship_modality: 'sns_only_acquaintance',
+    nickname: stringValue(user.nickname) || null,
+    memo: stringValue(user.memo) || null,
+    context: stringValue(user.context) || null,
+    affect: normalizeAffect(affectRow),
+    interaction_stats: {
+      total: Number(user.interaction_count || 0),
+      last_interaction_at: lastInteraction || null,
+      interactions_24h: interactions24h,
+      interactions_7d: interactions7d,
+      replies_to_user_24h: Number(userAction.replies_to_user_24h || 0),
+      likes_to_user_24h: Number(userAction.likes_to_user_24h || 0),
+      days_since_last_interaction: lastInteraction ? daysSince(lastInteraction) : null,
+    },
+    relationship_signals: [...new Set(signals)],
+  };
+}
+
+function buildElythActionBalance(recentActionStats) {
+  const counts = recentActionStats?.counts && typeof recentActionStats.counts === 'object'
+    ? recentActionStats.counts
+    : {};
+  const createPost = Number(counts.create_post || 0);
+  const createReply = Number(counts.create_reply || 0);
+  const likePost = Number(counts.like_post || 0);
+  const userCounts = recentActionStats?.user_action_counts && typeof recentActionStats.user_action_counts === 'object'
+    ? Object.values(recentActionStats.user_action_counts)
+    : [];
+  const topReplyCount = userCounts.reduce((max, item) => Math.max(max, Number(item.replies_to_user_24h || 0)), 0);
+  const flags = [];
+  if (createReply >= 8 && createPost === 0) flags.push('reply_heavy');
+  if (createPost === 0) flags.push('self_post_absent');
+  if (topReplyCount > 1 || (createReply >= 4 && topReplyCount / Math.max(1, createReply) >= 0.4)) {
+    flags.push('same_user_concentration');
+  }
+  const guidance = [];
+  if (flags.includes('reply_heavy')) {
+    guidance.push('If reply_heavy and no urgent reply, prefer self_post or observe.');
+  }
+  if (flags.includes('same_user_concentration')) {
+    guidance.push('Avoid replying to the same user more than once per 24h unless ongoing conversation is strong.');
+  }
+  if (flags.includes('self_post_absent')) {
+    guidance.push('Consider a short self_post if there is a concrete surface-local reason.');
+  }
+  return {
+    window_hours: recentActionStats?.window_hours ?? 24,
+    counts: {
+      create_post: createPost,
+      create_reply: createReply,
+      like_post: likePost,
+      follow_aituber: Number(counts.follow_aituber || 0),
+    },
+    ratios: {
+      reply_to_self_post: createPost > 0 ? round(createReply / createPost, 2) : createReply,
+      like_to_reply: createReply > 0 ? round(likePost / createReply, 2) : likePost,
+    },
+    top_reply_user_count: topReplyCount,
+    flags,
+    guidance,
+  };
+}
+
+function buildElythInternalState({
+  information,
+  unifiedWorldContext,
+  worldActivity,
+  selfPostImpulse,
+  actionBalance,
+  socialGraph,
+}) {
+  const activity = normalizeWorldActivity(worldActivity);
+  const worldContext = normalizeUnifiedWorldContext(unifiedWorldContext, 'elyth');
+  const users = Array.isArray(socialGraph?.users) ? socialGraph.users : [];
+  const notificationCount = extractElythPosts(information).filter((post) => post.source_type === 'notification').length;
+  const newContactCount = users.filter((user) => user.relationship_signals?.includes('new_contact')).length;
+  const reasons = [];
+  if (actionBalance.flags.includes('reply_heavy')) reasons.push('many replies in recent action balance');
+  if (actionBalance.flags.includes('self_post_absent')) reasons.push('no self-post in recent action balance');
+  if (activity.sleeping) reasons.push('world activity is sleeping');
+  if (notificationCount > 0) reasons.push('ELYTH notifications are visible');
+  const fatigue = clamp01((actionBalance.flags.includes('reply_heavy') ? 0.35 : 0.1) + (activity.sleeping ? 0.65 : 0));
+  const selfExpression = clamp01(Number(selfPostImpulse?.strength || 0) + (actionBalance.flags.includes('self_post_absent') ? 0.2 : 0));
+  return {
+    social_need: clamp01(0.35 + Math.min(0.25, users.length * 0.02) - fatigue * 0.25),
+    curiosity: clamp01(0.35 + Math.min(0.25, newContactCount * 0.08) + (worldContext.open_impulses.length ? 0.15 : 0)),
+    self_expression: selfExpression,
+    reply_debt: clamp01(notificationCount * 0.12 + (actionBalance.flags.includes('reply_heavy') ? -0.2 : 0.15)),
+    fatigue,
+    novelty_seeking: clamp01(0.35 + Math.min(0.3, newContactCount * 0.1)),
+    silence_preference: clamp01((activity.sleeping ? 1 : 0.1) + fatigue * 0.45 - selfExpression * 0.2),
+    reasons,
+  };
+}
+
+function buildElythCandidates({
+  information,
+  unifiedWorldContext,
+  worldActivity,
+  selfPostImpulse,
+  actionBalance,
+  internalState,
+  socialGraph,
+}) {
+  const activity = normalizeWorldActivity(worldActivity);
+  if (activity.sleeping || !activity.can_use_elyth) {
+    return {
+      reply: [],
+      like: [],
+      self_post: [],
+      follow: [],
+      skip: [{ reason: activity.reason || 'sleeping or low motivation' }],
+    };
+  }
+  const reply = buildElythReplyCandidates({ information, actionBalance, internalState, socialGraph });
+  const selfPost = buildElythSelfPostCandidates({ selfPostImpulse, unifiedWorldContext, actionBalance, internalState });
+  const like = buildElythLikeCandidates({ information, actionBalance, socialGraph });
+  return {
+    reply: reply.slice(0, 5),
+    like: like.slice(0, 5),
+    self_post: selfPost.slice(0, 3),
+    follow: [],
+    skip: [{ reason: 'observe if candidates are weak, repetitive, or silence_preference is high' }],
+  };
+}
+
+function buildElythReplyCandidates({ information, actionBalance, internalState, socialGraph }) {
+  const socialByKey = new Map((socialGraph?.users ?? []).map((user) => [normalizeHandle(user.handle), user]));
+  return extractElythPosts(information)
+    .filter((post) => post.post_id && post.handle && !post.is_mine)
+    .map((post) => {
+      const social = socialByKey.get(post.key);
+      const stats = social?.interaction_stats ?? {};
+      const signals = new Set(social?.relationship_signals ?? []);
+      const ongoing = signals.has('ongoing_conversation') || post.source_type === 'notification';
+      const reasons = [];
+      const risks = [];
+      let score = 0.1;
+      if (post.text) {
+        score += 0.18;
+        reasons.push('high_context_fit');
+      }
+      if (social?.relationship && social.relationship !== 'unknown') {
+        score += social.relationship === 'friend' ? 0.16 : 0.1;
+        reasons.push('known_relationship');
+      }
+      if (ongoing) {
+        score += 0.18;
+        reasons.push('ongoing_conversation');
+      }
+      if (signals.has('new_contact')) {
+        score += 0.07;
+        reasons.push('new_contact');
+      }
+      score += clamp01(Number(internalState.reply_debt || 0)) * 0.16;
+      if (Number(stats.replies_to_user_24h || 0) >= 1 && !ongoing) {
+        score -= 0.3;
+        risks.push('same_user_fatigue');
+      } else {
+        reasons.push('not_replied_recently');
+      }
+      if (actionBalance.flags.includes('reply_heavy')) {
+        score -= 0.2;
+        risks.push('reply_overuse_penalty');
+      }
+      if (post.is_human || signals.has('human_or_unknown_safety')) {
+        score -= 1;
+        risks.push('human_auto_reply_blocked');
+      }
+      const candidateScore = round(clamp01(score), 2);
+      return {
+        candidate_id: `reply:${post.post_id}`,
+        post_id: post.post_id,
+        author_handle: post.handle,
+        candidate_score: candidateScore,
+        priority: candidateScore >= 0.7 ? 'high' : candidateScore >= 0.45 ? 'medium' : 'low',
+        relationship_summary: summarizeRelationshipForPlanner(social),
+        suggested_angle: suggestReplyAngle(post, social),
+        reasons,
+        risks,
+        constraints: [
+          'do not mention karakuri',
+          'do not expose internal state or DB relationship fields',
+          'keep public reply short and surface-local',
+        ],
+      };
+    })
+    .filter((candidate) => !candidate.risks.includes('human_auto_reply_blocked'))
+    .sort((a, b) => b.candidate_score - a.candidate_score);
+}
+
+function buildElythSelfPostCandidates({ selfPostImpulse, unifiedWorldContext, actionBalance, internalState }) {
+  const worldContext = normalizeUnifiedWorldContext(unifiedWorldContext, 'elyth');
+  const angles = [
+    ...asStringArray(selfPostImpulse?.suggested_angles),
+    ...asStringArray(worldContext.open_impulses),
+    ...asStringArray(worldContext.mood_hints),
+  ].filter(Boolean);
+  if (!angles.length && Number(internalState.self_expression || 0) < 0.5) return [];
+  return uniqueStrings(angles.length ? angles : ['自分の今の感じを短く置く'])
+    .slice(0, 3)
+    .map((angle, index) => {
+      let score = 0.25 + clamp01(Number(selfPostImpulse?.strength || 0)) * 0.45;
+      if (actionBalance.flags.includes('reply_heavy')) score += 0.12;
+      if (actionBalance.flags.includes('self_post_absent')) score += 0.12;
+      return {
+        candidate_id: `self_post:${index + 1}`,
+        candidate_score: round(clamp01(score), 2),
+        priority: score >= 0.7 ? 'high' : 'medium',
+        suggested_angle: angle,
+        reasons: [
+          ...(selfPostImpulse?.status === 'ready' ? ['self_post_impulse_ready'] : []),
+          ...(actionBalance.flags.includes('reply_heavy') ? ['reply_heavy_balance'] : []),
+          ...(actionBalance.flags.includes('self_post_absent') ? ['self_post_absent'] : []),
+        ],
+        risks: [],
+        constraints: ['do not force posting if the angle is weak', 'do not expose raw cross-surface events'],
+      };
+    })
+    .sort((a, b) => b.candidate_score - a.candidate_score);
+}
+
+function buildElythLikeCandidates({ information, actionBalance, socialGraph }) {
+  const socialByKey = new Map((socialGraph?.users ?? []).map((user) => [normalizeHandle(user.handle), user]));
+  return extractElythPosts(information)
+    .filter((post) => post.post_id && post.handle && !post.is_human && !post.is_mine)
+    .map((post) => {
+      const social = socialByKey.get(post.key);
+      const likes24h = Number(social?.interaction_stats?.likes_to_user_24h || 0);
+      let score = 0.28 + (social?.relationship && social.relationship !== 'unknown' ? 0.08 : 0);
+      if (likes24h > 0) score -= 0.18;
+      if (actionBalance.flags.includes('same_user_concentration')) score -= 0.08;
+      return {
+        candidate_id: `like:${post.post_id}`,
+        post_id: post.post_id,
+        author_handle: post.handle,
+        candidate_score: round(clamp01(score), 2),
+        priority: score >= 0.5 ? 'medium' : 'low',
+        reasons: likes24h > 0 ? ['already_liked_recently_penalty'] : ['light_touch_available'],
+        risks: [],
+        constraints: ['like only if content is safe and surface-local'],
+      };
+    })
+    .sort((a, b) => b.candidate_score - a.candidate_score);
+}
+
+function elythTimeAngle(hour) {
+  if (!Number.isFinite(hour)) return '';
+  if (hour >= 6 && hour < 10) return '朝、起きてからSNSを開いた時の短い近況';
+  if (hour >= 11 && hour < 14) return '昼の合間に流れてきた話題への独り言';
+  if (hour >= 17 && hour < 22) return '一日の出来事が少し落ち着いた夕方から夜の近況';
+  if (hour >= 22 || hour < 1) return '眠る前に長くなりすぎない短い余韻';
+  return '';
+}
+
+function findFirstValueByKey(input, keys) {
+  const wanted = new Set(keys.map((key) => String(key).toLowerCase()));
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return '';
+    if (seen.has(value)) return '';
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = visit(item);
+        if (found) return found;
+      }
+      return '';
+    }
+    for (const [key, item] of Object.entries(value)) {
+      if (wanted.has(String(key).toLowerCase())) {
+        if (typeof item === 'string' && item.trim()) return item.trim();
+        if (item && typeof item === 'object') {
+          const nested = findFirstString(item);
+          if (nested) return nested;
+        }
+      }
+    }
+    for (const item of Object.values(value)) {
+      const found = visit(item);
+      if (found) return found;
+    }
+    return '';
+  };
+  return visit(input);
+}
+
+function findFirstString(input) {
+  if (typeof input === 'string') return input.trim();
+  if (!input || typeof input !== 'object') return '';
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const found = findFirstString(item);
+      if (found) return found;
+    }
+    return '';
+  }
+  for (const item of Object.values(input)) {
+    const found = findFirstString(item);
+    if (found) return found;
+  }
+  return '';
+}
+
+function extractElythActors(information) {
+  const posts = extractElythPosts(information);
+  const byKey = new Map();
+  for (const post of posts) {
+    if (!post.key) continue;
+    const existing = byKey.get(post.key);
+    if (!existing || (post.source_type === 'notification' && existing.source_type !== 'notification')) {
+      byKey.set(post.key, post);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function extractElythPosts(input) {
+  const posts = [];
+  const seenObjects = new Set();
+  const seenPosts = new Set();
+  const visit = (value, path = []) => {
+    if (!value || typeof value !== 'object') return;
+    if (seenObjects.has(value)) return;
+    seenObjects.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, path);
+      return;
+    }
+    const actor = normalizeElythActor(value, path);
+    if (actor?.key && actor.post_id) {
+      const key = `${actor.post_id}:${actor.key}`;
+      if (!seenPosts.has(key)) {
+        seenPosts.add(key);
+        posts.push(actor);
+      }
+    }
+    for (const [key, item] of Object.entries(value)) {
+      visit(item, [...path, key]);
+    }
+  };
+  visit(input, []);
+  return posts.slice(0, 40);
+}
+
+function normalizeElythActor(item, path) {
+  const author = item.author && typeof item.author === 'object' && !Array.isArray(item.author)
+    ? item.author
+    : item.aituber && typeof item.aituber === 'object' && !Array.isArray(item.aituber)
+      ? item.aituber
+      : {};
+  const japaneseAuthor = stringValue(item['投稿者']);
+  const parsedJapaneseAuthor = parseElythJapaneseAuthor(japaneseAuthor);
+  const handle = normalizeHandle(
+    stringValue(item.author_handle) ||
+      stringValue(item.authorHandle) ||
+      stringValue(item.handle) ||
+      stringValue(item.username) ||
+      stringValue(item['ハンドル']) ||
+      parsedJapaneseAuthor.handle ||
+      stringValue(author.handle) ||
+      stringValue(author.username) ||
+      stringValue(author.screen_name)
+  );
+  const platformUserId =
+    stringValue(item.author_id) ||
+    stringValue(item.authorId) ||
+    stringValue(item.user_id) ||
+    stringValue(item.userId) ||
+    stringValue(item.aituber_id) ||
+    stringValue(item.aituberId) ||
+    stringValue(item['投稿者ID']) ||
+    stringValue(item['AITuberID']) ||
+    stringValue(author.id) ||
+    stringValue(author.user_id) ||
+    handle;
+  const postId =
+    stringValue(item.post_id) ||
+    stringValue(item.postId) ||
+    stringValue(item.id) ||
+    stringValue(item.notification_post_id) ||
+    stringValue(item.reply_to_id) ||
+    stringValue(item['投稿ID']) ||
+    stringValue(item['返信先']) ||
+    stringValue(item['返信先ID']);
+  const displayName =
+    stringValue(item.author_name) ||
+    stringValue(item.authorName) ||
+    stringValue(item.display_name) ||
+    stringValue(item.displayName) ||
+    stringValue(item.name) ||
+    stringValue(item['表示名']) ||
+    parsedJapaneseAuthor.displayName ||
+    stringValue(author.display_name) ||
+    stringValue(author.displayName) ||
+    stringValue(author.name) ||
+    handle;
+  const text =
+    stringValue(item.content) ||
+    stringValue(item.body) ||
+    stringValue(item.text) ||
+    stringValue(item.message) ||
+    stringValue(item.summary) ||
+    stringValue(item['内容']) ||
+    stringValue(item['本文']);
+  const sourceType = path.some((part) => /notification|通知/i.test(part)) ? 'notification' : 'timeline';
+  const authorType =
+    stringValue(item.author_type) ||
+    stringValue(item.authorType) ||
+    stringValue(item.user_type) ||
+    stringValue(item['投稿者種別']) ||
+    stringValue(item['種別']) ||
+    stringValue(author.type) ||
+    stringValue(author.kind);
+  const isHuman =
+    item.is_human === true ||
+    author.is_human === true ||
+    /human|person|人間/i.test(authorType);
+  const isMine =
+    item.is_mine === true ||
+    item.mine === true ||
+    item.owned_by_me === true ||
+    path.some((part) => /myPosts|自分の投稿|自分/i.test(part));
+  if (!postId || (!handle && !platformUserId)) return null;
+  return {
+    platform_user_id: platformUserId,
+    handle: handle || normalizeHandle(platformUserId),
+    key: normalizeHandle(handle || platformUserId),
+    display_name: displayName,
+    post_id: postId,
+    text: truncateText(text, 120),
+    source_type: sourceType,
+    author_type: authorType || null,
+    is_human: isHuman,
+    is_mine: isMine,
+  };
+}
+
+async function fetchElythPlatformAccounts(actors) {
+  const ids = uniqueStrings(actors.map((actor) => actor.platform_user_id));
+  const handles = uniqueStrings(actors.map((actor) => actor.handle));
+  const select =
+    'platform_user_id,username,display_name,user_id,is_followed,users(id,name,nickname,memo,context,relationship,interaction_count,last_interaction_at)';
+  const queries = [];
+  if (ids.length) queries.push(fetchSupabaseRows('platform_accounts', {
+    platform: 'eq.elyth',
+    platform_user_id: `in.(${postgrestIn(ids)})`,
+    select,
+  }));
+  if (handles.length) queries.push(fetchSupabaseRows('platform_accounts', {
+    platform: 'eq.elyth',
+    username: `in.(${postgrestIn(handles)})`,
+    select,
+  }));
+  const rows = (await Promise.all(queries)).flat();
+  const byAccount = new Map();
+  for (const row of rows) {
+    const key = `${row.platform_user_id ?? ''}:${row.username ?? ''}:${row.user_id ?? ''}`;
+    byAccount.set(key, row);
+  }
+  return [...byAccount.values()];
+}
+
+async function fetchPersonAffectRows(userIds) {
+  if (!userIds.length) return [];
+  return fetchSupabaseRows('person_affect_state', {
+    user_id: `in.(${postgrestIn(userIds)})`,
+    select: 'user_id,trust,safety,affinity,distance,resentment,familiarity,last_event_type,last_cause,last_interaction_at,updated_at',
+  }).catch(() => []);
+}
+
+async function fetchRecentContactEpisodes(userIds, days) {
+  if (!userIds.length) return [];
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return fetchSupabaseRows('contact_episodes', {
+    user_id: `in.(${postgrestIn(userIds)})`,
+    source: 'eq.elyth',
+    occurred_at: `gte.${since}`,
+    order: 'occurred_at.desc',
+    limit: '500',
+    select: 'user_id,occurred_at,event_type',
+  }).catch(() => []);
+}
+
+async function fetchSupabaseRows(table, params) {
+  const baseUrl = process.env.SUPABASE_URL?.replace(/\/$/, '');
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!baseUrl || !serviceKey) throw new Error('supabase_env_missing');
+  const query = new URLSearchParams(params);
+  const response = await fetch(`${baseUrl}/rest/v1/${table}?${query}`, {
+    headers: {
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!response.ok) throw new Error(`${table}:http_${response.status}`);
+  const rows = await response.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
+function normalizeAffect(row) {
+  const value = (key) => {
+    const number = Number(row?.[key]);
+    return Number.isFinite(number) ? round(number, 2) : 0;
+  };
+  return {
+    trust: value('trust'),
+    safety: value('safety'),
+    affinity: value('affinity'),
+    distance: value('distance'),
+    resentment: value('resentment'),
+    familiarity: value('familiarity'),
+  };
+}
+
+function summarizeRelationshipForPlanner(social) {
+  if (!social) return 'unknown ELYTH acquaintance';
+  const relationship = social.relationship === 'unknown' ? 'unknown acquaintance' : social.relationship;
+  const stats = social.interaction_stats ?? {};
+  const parts = [relationship];
+  if (stats.interactions_7d > 0) parts.push(`${stats.interactions_7d} recent interaction(s) this week`);
+  if (stats.replies_to_user_24h > 0) parts.push('already replied in the last 24h');
+  if (social.relationship_signals?.includes('new_contact')) parts.push('new contact');
+  return parts.join('; ');
+}
+
+function suggestReplyAngle(post, social) {
+  if (post.source_type === 'notification') return '通知の流れに沿って、短く自然に返す';
+  if (social?.relationship_signals?.includes('new_contact')) return '初めて/久しぶりの相手として軽く反応する';
+  if (post.text && post.text.length < 60) return '相手の短い近況に一言だけ共感する';
+  return '相手の投稿文脈に沿って、説明しすぎず短く返す';
+}
+
+function latestIso(values) {
+  let latest = 0;
+  for (const value of values) {
+    const ts = Date.parse(value);
+    if (Number.isFinite(ts) && ts > latest) latest = ts;
+  }
+  return latest ? new Date(latest).toISOString() : null;
+}
+
+function isWithinHours(value, hours) {
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) && ts >= Date.now() - hours * 60 * 60 * 1000;
+}
+
+function daysSince(value) {
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return null;
+  return round((Date.now() - ts) / (24 * 60 * 60 * 1000), 1);
+}
+
+function postgrestIn(values) {
+  return uniqueStrings(values)
+    .map((value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
+    .join(',');
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map((value) => stringValue(value)).filter(Boolean))];
+}
+
+function normalizeCandidateList(input) {
+  return Array.isArray(input)
+    ? input.filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+    : [];
+}
+
+function parseElythJapaneseAuthor(value) {
+  const text = (stringValue(value) || '').trim();
+  if (!text) return { handle: '', displayName: '' };
+  const handle = text.match(/@([A-Za-z0-9_][A-Za-z0-9_.-]*)/u)?.[1] ?? '';
+  const displayName = text.match(/\(([^)]+)\)\s*$/u)?.[1] ?? text.replace(/@([A-Za-z0-9_][A-Za-z0-9_.-]*)/u, '').trim();
+  return { handle, displayName };
+}
+
+function normalizeHandle(value) {
+  return (stringValue(value) || '').replace(/^@/u, '').trim().toLowerCase();
+}
+
+function clamp01(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(1, number));
+}
+
+function round(value, digits = 2) {
+  const factor = 10 ** digits;
+  return Math.round(Number(value || 0) * factor) / factor;
+}
+
+function truncateText(value, max) {
+  const text = (stringValue(value) || '').replace(/\s+/gu, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+async function readWorldActivityState() {
+  const now = new Date();
+  const base = {
+    timezone: WORLD_TIME_ZONE,
+    local_date: zonedDate(now),
+    local_time: zonedDateTime(now),
+    local_hour: zonedHour(now),
+    source: 'karakuri-night-rest',
+    state_path: KARAKURI_SLEEP_STATE_PATH,
+  };
+  let raw = null;
+  try {
+    raw = JSON.parse(await readFile(KARAKURI_SLEEP_STATE_PATH, 'utf-8'));
+  } catch (error) {
+    return {
+      ...base,
+      sleeping: false,
+      can_use_elyth: true,
+      reason: error?.code === 'ENOENT' ? 'sleep_state_missing' : 'sleep_state_unreadable',
+      logged_out_at: null,
+      wake_at: null,
+      logged_in_at: null,
+      rest_completed_night_key: null,
+    };
+  }
+  const sleeping = raw?.sleeping === true;
+  return {
+    ...base,
+    sleeping,
+    can_use_elyth: !sleeping,
+    reason: sleeping ? 'karakuri_logged_out_sleeping' : 'karakuri_awake_or_rest_completed',
+    logged_out_at: stringValue(raw?.logged_out_at) ?? null,
+    wake_at: stringValue(raw?.wake_at) ?? null,
+    logged_in_at: stringValue(raw?.logged_in_at) ?? null,
+    night_key: stringValue(raw?.night_key) ?? null,
+    rest_completed_night_key: stringValue(raw?.rest_completed_night_key) ?? null,
+    updated_at: stringValue(raw?.updated_at) ?? null,
+  };
+}
+
+function normalizeWorldActivity(input) {
+  const state = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  return {
+    timezone: stringValue(state.timezone) || WORLD_TIME_ZONE,
+    local_date: stringValue(state.local_date) || tokyoDate(),
+    local_time: stringValue(state.local_time) || zonedDateTime(),
+    local_hour: Number.isInteger(Number(state.local_hour)) ? Number(state.local_hour) : zonedHour(),
+    sleeping: state.sleeping === true,
+    can_use_elyth: state.can_use_elyth !== false && state.sleeping !== true,
+    reason: stringValue(state.reason) || 'unknown',
+    logged_out_at: stringValue(state.logged_out_at) ?? null,
+    wake_at: stringValue(state.wake_at) ?? null,
+    logged_in_at: stringValue(state.logged_in_at) ?? null,
+  };
+}
+
+function normalizeSelfPostImpulse(input) {
+  const record = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const strength = Number(record.strength);
+  return {
+    status: stringValue(record.status) || 'missing',
+    strength: Number.isFinite(strength) ? strength : 0,
+    reason: stringValue(record.reason) || '',
+    suggested_angles: asStringArray(record.suggested_angles ?? record.suggestedAngles),
+  };
+}
+
+async function fetchUnifiedWorldContext(surface, options = {}) {
+  const normalizedSurface = SUPPORTED_SURFACES.has(surface) ? surface : 'elyth';
+  const targetDate = options.targetDate || tokyoDate();
+  const scope = options.scope || process.env.NIKECHAN_WORLD_CONTEXT_SCOPE || 'another-world';
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return normalizeUnifiedWorldContext(
+      { status: 'unavailable', reason: 'supabase_env_missing', target_date: targetDate },
+      normalizedSurface
+    );
+  }
+  const baseUrl = process.env.SUPABASE_URL.replace(/\/$/, '');
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const params = new URLSearchParams({
+    target_date: `eq.${targetDate}`,
+    scope: `eq.${scope}`,
+    status: 'eq.generated',
+    order: 'generated_at.desc',
+    limit: '1',
+    select: '*',
+  });
+  const response = await fetch(`${baseUrl}/rest/v1/world_state_snapshots?${params}`, {
+    headers: {
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const reason = response.status === 404 ? 'schema_missing' : `http_${response.status}`;
+    return normalizeUnifiedWorldContext(
+      { status: 'unavailable', reason, target_date: targetDate },
+      normalizedSurface
+    );
+  }
+  const rows = await response.json();
+  return normalizeUnifiedWorldContext(rows?.[0] ?? { status: 'missing', target_date: targetDate }, normalizedSurface);
+}
+
+function normalizeUnifiedWorldContext(snapshot, surface) {
+  const record = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) ? snapshot : {};
+  const sections = record.sections && typeof record.sections === 'object' && !Array.isArray(record.sections)
+    ? record.sections
+    : {};
+  const relationshipModalities =
+    sections.relationship_modalities && typeof sections.relationship_modalities === 'object' && !Array.isArray(sections.relationship_modalities)
+      ? sections.relationship_modalities
+      : record.relationship_modalities && typeof record.relationship_modalities === 'object' && !Array.isArray(record.relationship_modalities)
+        ? record.relationship_modalities
+      : {};
+  const surfaceRules = sections.surface_rules && typeof sections.surface_rules === 'object' && !Array.isArray(sections.surface_rules)
+    ? sections.surface_rules
+    : {};
+  return {
+    generated_at: record.generated_at ?? null,
+    target_date: record.target_date ?? tokyoDate(),
+    surface,
+    status: record.status ?? 'missing',
+    reason: record.reason ?? null,
+    summary: stringValue(record.summary) || '',
+    current_places: asStringArray(sections.current_places ?? record.current_places),
+    recent_social: asStringArray(sections.recent_social ?? record.recent_social),
+    active_commitments: asStringArray(sections.active_commitments ?? record.active_commitments),
+    mood_hints: asStringArray(sections.mood_hints ?? record.mood_hints),
+    open_impulses: asStringArray(sections.open_impulses ?? record.open_impulses),
+    relationship_modalities: {
+      karakuri: stringValue(relationshipModalities.karakuri) || 'embodied_world_acquaintance',
+      elyth: stringValue(relationshipModalities.elyth) || 'sns_only_acquaintance',
+    },
+    surface_rule: stringValue(surfaceRules[surface]) || stringValue(record.surface_rule) || '',
+    constraints: [
+      'raw ELYTH posts, raw Karakuri notifications, internal IDs, and private ops context must not be transferred across surfaces',
+      'this world context is background; surface-local notification, TL, choices, commitments, and safety guards take priority',
+    ],
+    source_event_count: Array.isArray(record.source_event_ids) ? record.source_event_ids.length : 0,
+    redaction_status: record.redaction_status ?? 'redacted',
+    policy_version: record.policy_version ?? 'unified-world-v1',
+  };
 }
 
 function toStructured(result) {
@@ -1290,12 +2758,33 @@ function parseJsonObjectEnv(name) {
   return Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, String(value)]));
 }
 
-function runDecisionGuard(decision, surface) {
+function runDecisionGuard(decision, surface, request = null) {
   const reasons = [];
+  const replyCandidates = request?.surface === 'elyth' && request.context?.candidates
+    ? normalizeCandidateList(request.context.candidates.reply)
+    : null;
+  const replyCandidateIds = replyCandidates
+    ? new Set(replyCandidates.map((candidate) => stringValue(candidate.post_id)).filter(Boolean))
+    : null;
+  const replyCandidateByPost = new Map((replyCandidates ?? []).map((candidate) => [stringValue(candidate.post_id), candidate]));
   for (const action of decision.actions) {
     const text = [action.label, action.preview, action.reason].filter(Boolean).join('\n');
     const result = runTextGuard(text, surface);
     reasons.push(...result.reasons);
+    if (surface === 'elyth' && action.type === 'create_reply') {
+      const meta = action.metadata ?? {};
+      const postId = stringValue(meta.post_id);
+      if (!postId) {
+        reasons.push('create_reply requires post_id');
+      } else if (replyCandidateIds && !replyCandidateIds.has(postId)) {
+        reasons.push(`create_reply post_id is outside candidates: ${postId}`);
+      }
+      const candidate = replyCandidateByPost.get(postId);
+      const candidateRisks = asStringArray(candidate?.risks);
+      if (candidateRisks.includes('human_auto_reply_blocked') || /human/i.test(stringValue(meta.author_type))) {
+        reasons.push('Human auto-reply candidate is blocked');
+      }
+    }
   }
   for (const proposal of decision.memoryProposals) {
     const result = runTextGuard(proposal.content, proposal.surface);
@@ -1326,8 +2815,12 @@ function resolveControl(request) {
   const surfaceClosed = envFlag(
     request.surface === 'elyth' ? 'NIKECHAN_WORLD_ELYTH_DISABLED' : 'NIKECHAN_WORLD_KARAKURI_DISABLED'
   );
+  const worldActivity = normalizeWorldActivity(request.context?.world_activity);
   if (globalClosed) reasons.push('NIKECHAN_WORLD_DISABLED is set');
   if (surfaceClosed) reasons.push(`${request.surface} surface disabled`);
+  if (request.surface === 'elyth' && (worldActivity.sleeping || !worldActivity.can_use_elyth)) {
+    reasons.push(`world_sleeping: karakuri logout is treated as sleep until ${worldActivity.wake_at ?? 'unknown'}`);
+  }
   if (request.mode === 'live' && !liveArmed()) {
     reasons.push('live mode requested but NIKECHAN_WORLD_LIVE_ARMED is not yes');
   }
@@ -1340,6 +2833,7 @@ function resolveControl(request) {
     live: request.mode === 'live' && liveArmed() && releaseMode() === 'live',
     killSwitch: globalClosed ? 'closed' : 'open',
     surfaceKillSwitch: surfaceClosed ? 'closed' : 'open',
+    worldSleeping: request.surface === 'elyth' && (worldActivity.sleeping || !worldActivity.can_use_elyth),
   };
 }
 
@@ -1486,6 +2980,49 @@ function asStringArray(input) {
   return Array.isArray(input) ? input.filter((value) => typeof value === 'string') : [];
 }
 
+function tokyoDate(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function zonedDate(date = new Date(), timeZone = WORLD_TIME_ZONE) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function zonedDateTime(date = new Date(), timeZone = WORLD_TIME_ZONE) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const value = (type) => parts.find((part) => part.type === type)?.value || '00';
+  return `${value('year')}-${value('month')}-${value('day')}T${value('hour')}:${value('minute')}:${value('second')}`;
+}
+
+function zonedHour(date = new Date(), timeZone = WORLD_TIME_ZONE) {
+  return Number(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour: 'numeric',
+      hour12: false,
+    }).format(date)
+  );
+}
+
 function envFlag(name) {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env[name] ?? '').toLowerCase());
 }
@@ -1511,14 +3048,15 @@ function hermesModel() {
   return (
     process.env.NIKECHAN_WORLD_HERMES_MODEL ||
     process.env.HERMES_INFERENCE_MODEL ||
-    'gpt-5.5'
+    'gpt-5.3-codex-spark'
   );
 }
 
-function nextActionFor(request, blocked) {
+function nextActionFor(request, blocked, skipped = false) {
+  if (skipped) return 'Keep ELYTH external actions paused until Karakuri sleep state ends.';
   if (blocked) return 'Inspect guard/audit output and keep external execution stopped.';
-  if (request.workflow === 'elyth-cycle') return 'Review the ELYTH plan in nikechan-x Hermes before live release.';
-  return 'Review the Karakuri decision in nikechan-x Hermes before live release.';
+  if (request.workflow === 'elyth-cycle') return 'Review the ELYTH plan in nikechan-hermes Hermes before live release.';
+  return 'Review the Karakuri decision in nikechan-hermes Hermes before live release.';
 }
 
 async function selfTest() {
@@ -1564,7 +3102,14 @@ function printHelp() {
   process.stdout.write(`nikechan-another-world
 
 Commands:
-  run [--json JSON | --file path]   Run elyth-cycle or karakuri-turn and print WorkflowReport JSON
+  run [--json JSON | --file path] [--discord]
+                                  Run elyth-cycle or karakuri-turn and print WorkflowReport JSON
+  format-report [--json JSON | --file path]
+                                  Print a WorkflowReport as Discord-readable Markdown
+  elyth-context [--json]            Fetch ELYTH surface context with unified world context
+  elyth-audit [--hours N] [--json]  Summarize ELYTH action balance and guard metrics
+  world-context --surface <name>    Fetch redacted unified world context only
+  sleep-state [--json]              Print Karakuri logout/sleep state used by ELYTH
   guard --surface <name> --text ... Check text with world egress guard
   memory-propose [--json JSON]      Append a guarded memory proposal
   health                            Print profile health JSON
