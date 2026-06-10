@@ -49,7 +49,7 @@ async function main() {
   }
   if (command === 'elyth-context') {
     const context = await readElythContext();
-    if (args.includes('--json')) process.stdout.write(`${JSON.stringify(context, null, 2)}\n`);
+    if (args.includes('--json')) process.stdout.write(`${JSON.stringify(context)}\n`);
     else process.stdout.write(formatElythContext(context));
     return;
   }
@@ -496,6 +496,7 @@ function normalizeHermesDecision(input, request, fallback) {
 
 function normalizeHermesActions(input, request) {
   if (!Array.isArray(input)) return [];
+  const candidateIndex = buildElythCandidateIndex(request.context?.candidates);
   return input
     .map((item, index) => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
@@ -505,7 +506,12 @@ function normalizeHermesActions(input, request) {
         item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
           ? item.metadata
           : {};
-      const normalizedMetadata = normalizeElythActionMetadata(item, metadata);
+      const normalizedMetadata = enrichElythActionMetadataFromCandidates(
+        type,
+        normalizeElythActionMetadata(item, metadata),
+        candidateIndex,
+        stringValue(item.id)
+      );
       const action = {
         id: stringValue(item.id) || `${type}-${index + 1}`,
         type,
@@ -575,6 +581,18 @@ function normalizeElythActionMetadata(item, metadata = {}) {
     'platformUserId',
     'author_type',
     'authorType',
+    'author_id',
+    'authorId',
+    'username',
+    'display_name',
+    'displayName',
+    'author_display_name',
+    'authorDisplayName',
+    'relationship_summary',
+    'suggested_angle',
+    'priority',
+    'source_type',
+    'sourceType',
   ]) {
     if (item && typeof item === 'object' && item[key] !== undefined && merged[key] === undefined) {
       merged[key] = item[key];
@@ -591,8 +609,115 @@ function normalizeElythActionMetadata(item, metadata = {}) {
     candidate_id: stringValue(merged.candidate_id) || stringValue(merged.candidateId),
     author_handle: normalizeHandle(stringValue(merged.author_handle) || stringValue(merged.authorHandle)),
     platform_user_id: stringValue(merged.platform_user_id) || stringValue(merged.platformUserId),
+    author_id: stringValue(merged.author_id) || stringValue(merged.authorId),
+    username: normalizeHandle(stringValue(merged.username)),
+    display_name: stringValue(merged.display_name) || stringValue(merged.displayName),
+    author_display_name:
+      stringValue(merged.author_display_name) ||
+      stringValue(merged.authorDisplayName) ||
+      stringValue(merged.display_name) ||
+      stringValue(merged.displayName),
     author_type: stringValue(merged.author_type) || stringValue(merged.authorType),
+    relationship_summary: stringValue(merged.relationship_summary),
+    suggested_angle: stringValue(merged.suggested_angle),
+    priority: stringValue(merged.priority),
+    source_type: stringValue(merged.source_type) || stringValue(merged.sourceType),
   };
+}
+
+function buildElythCandidateIndex(input) {
+  const index = {
+    byCandidateId: new Map(),
+    byPostId: new Map(),
+    byTypedPostId: new Map(),
+  };
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return index;
+
+  const addCandidate = (candidate, group) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return;
+    const normalized = normalizeElythCandidateMetadata(candidate, group);
+    if (normalized.candidate_id) index.byCandidateId.set(normalized.candidate_id, normalized);
+    if (normalized.post_id) {
+      if (!index.byPostId.has(normalized.post_id)) index.byPostId.set(normalized.post_id, normalized);
+      index.byTypedPostId.set(`${group}:${normalized.post_id}`, normalized);
+    }
+  };
+
+  for (const group of ['reply', 'like', 'self_post', 'follow']) {
+    for (const candidate of normalizeCandidateList(input[group])) addCandidate(candidate, group);
+  }
+  return index;
+}
+
+function normalizeElythCandidateMetadata(candidate, group) {
+  const metadata = normalizeElythActionMetadata(candidate, {});
+  const score = Number(candidate.candidate_score);
+  return dropUndefinedValues({
+    ...metadata,
+    candidate_id: stringValue(candidate.candidate_id) || metadata.candidate_id,
+    candidate_group: group,
+    post_id: stringValue(candidate.post_id) || metadata.post_id,
+    author_handle: normalizeHandle(stringValue(candidate.author_handle) || metadata.author_handle),
+    platform_user_id: stringValue(candidate.platform_user_id) || metadata.platform_user_id,
+    author_id: stringValue(candidate.author_id) || metadata.author_id,
+    username: normalizeHandle(stringValue(candidate.username) || metadata.username),
+    display_name: stringValue(candidate.display_name) || metadata.display_name,
+    author_display_name:
+      stringValue(candidate.author_display_name) ||
+      stringValue(candidate.display_name) ||
+      metadata.author_display_name,
+    author_type: stringValue(candidate.author_type) || metadata.author_type,
+    relationship_summary: stringValue(candidate.relationship_summary),
+    suggested_angle: stringValue(candidate.suggested_angle),
+    priority: stringValue(candidate.priority),
+    candidate_score: Number.isFinite(score) ? score : undefined,
+    reasons: asStringArray(candidate.reasons),
+    risks: asStringArray(candidate.risks),
+    constraints: asStringArray(candidate.constraints),
+    source_type: stringValue(candidate.source_type) || metadata.source_type,
+  });
+}
+
+function enrichElythActionMetadataFromCandidates(type, metadata, candidateIndex, actionId = '') {
+  const index = candidateIndex?.byCandidateId ? candidateIndex : buildElythCandidateIndex(candidateIndex);
+  const candidate = findElythCandidateForAction(type, metadata, index, actionId);
+  if (!candidate) return metadata;
+  return normalizeElythActionMetadata(null, mergeElythMetadata(metadata, candidate));
+}
+
+function findElythCandidateForAction(type, metadata, index, actionId = '') {
+  const candidateId = stringValue(metadata?.candidate_id) || stringValue(actionId);
+  if (candidateId && index.byCandidateId.has(candidateId)) return index.byCandidateId.get(candidateId);
+  const postId = stringValue(metadata?.post_id);
+  if (!postId) return null;
+  for (const group of elythCandidateGroupsForAction(type)) {
+    const matched = index.byTypedPostId.get(`${group}:${postId}`);
+    if (matched) return matched;
+  }
+  return index.byPostId.get(postId) ?? null;
+}
+
+function elythCandidateGroupsForAction(type) {
+  if (type === 'create_reply' || type === 'draft_reply') return ['reply'];
+  if (type === 'like_post') return ['like'];
+  if (type === 'create_post' || type === 'draft_self_post') return ['self_post'];
+  if (type === 'follow_aituber') return ['follow'];
+  if (type === 'observe_timeline') return ['like', 'reply'];
+  return ['reply', 'like', 'self_post', 'follow'];
+}
+
+function mergeElythMetadata(primary, fallback) {
+  const merged = { ...dropUndefinedValues(fallback), ...dropUndefinedValues(primary) };
+  for (const key of ['reasons', 'risks', 'constraints']) {
+    if (!asStringArray(merged[key]).length) delete merged[key];
+  }
+  return merged;
+}
+
+function dropUndefinedValues(input) {
+  return Object.fromEntries(
+    Object.entries(input ?? {}).filter(([, value]) => value !== undefined && value !== null && value !== '')
+  );
 }
 
 function decideElythCycle(request, control) {
@@ -628,7 +753,7 @@ function decideElythCycle(request, control) {
     '';
   const moodHint = asStringArray(worldContext.mood_hints)[0] || recentMood;
   const selfPostAngle = selfPostImpulse.suggested_angles[0] || worldImpulse;
-  const explicitActions = normalizeElythActions(request.context?.actions);
+  const explicitActions = normalizeElythActions(request.context?.actions, request.context?.candidates);
   const plannerActions = buildActionsFromPlannerCandidates(request.context?.candidates, maxActions);
   const defaultCandidates = [
     {
@@ -885,35 +1010,42 @@ function escapePostgrestLike(value) {
   return String(value).replace(/[%*_]/g, (char) => `\\${char}`);
 }
 
-function normalizeElythActions(input) {
+function normalizeElythActions(input, candidates) {
   if (!Array.isArray(input)) return [];
+  const candidateIndex = buildElythCandidateIndex(candidates);
   return input
     .map((item, index) => {
       if (!item || typeof item !== 'object') return null;
       const type = stringValue(item.type);
       if (!type) return null;
       const id = stringValue(item.id) || `${type}-${index + 1}`;
-      const content = stringValue(item.content);
-      const postId = stringValue(item.post_id) || stringValue(item.postId);
-      const handle = stringValue(item.handle);
-      const authorHandle = normalizeHandle(stringValue(item.author_handle) || stringValue(item.authorHandle));
+      const sourceMetadata =
+        item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+          ? item.metadata
+          : {};
+      const metadata = enrichElythActionMetadataFromCandidates(
+        type,
+        normalizeElythActionMetadata(item, sourceMetadata),
+        candidateIndex,
+        id
+      );
+      const notificationIds = asStringArray(item.notification_ids).length
+        ? asStringArray(item.notification_ids)
+        : asStringArray(sourceMetadata.notification_ids);
+      if (notificationIds.length) metadata.notification_ids = notificationIds;
       return {
         id,
         type,
         status: 'proposed',
         label: stringValue(item.label) || type,
-        preview: content || postId || handle || stringValue(item.preview) || type,
+        preview:
+          stringValue(metadata.content) ||
+          stringValue(metadata.post_id) ||
+          stringValue(metadata.handle) ||
+          stringValue(item.preview) ||
+          type,
         reason: stringValue(item.reason) || 'Hermes proposed ELYTH action',
-        metadata: {
-          content,
-          post_id: postId,
-          handle,
-          candidate_id: stringValue(item.candidate_id) || stringValue(item.candidateId),
-          author_handle: authorHandle,
-          platform_user_id: stringValue(item.platform_user_id) || stringValue(item.platformUserId),
-          author_type: stringValue(item.author_type) || stringValue(item.authorType),
-          notification_ids: asStringArray(item.notification_ids),
-        },
+        metadata,
       };
     })
     .filter(Boolean);
@@ -946,12 +1078,7 @@ function buildActionsFromPlannerCandidates(input, maxActions) {
       label: '返信候補',
       preview: stringValue(candidate.suggested_angle) || stringValue(candidate.post_id) || 'ELYTH返信を検討する',
       reason: asStringArray(candidate.reasons).join('; ') || 'candidate builder selected reply',
-      metadata: {
-        candidate_id: stringValue(candidate.candidate_id),
-        post_id: stringValue(candidate.post_id),
-        author_handle: normalizeHandle(stringValue(candidate.author_handle)),
-        candidate_score: Number(candidate.candidate_score || 0),
-      },
+      metadata: normalizeElythCandidateMetadata(candidate, 'reply'),
     });
   }
   for (const candidate of Array.isArray(input.like) ? input.like : []) {
@@ -963,12 +1090,7 @@ function buildActionsFromPlannerCandidates(input, maxActions) {
       label: 'いいね候補確認',
       preview: stringValue(candidate.post_id) || 'ELYTHいいね候補を確認する',
       reason: asStringArray(candidate.reasons).join('; ') || 'candidate builder selected like',
-      metadata: {
-        candidate_id: stringValue(candidate.candidate_id),
-        post_id: stringValue(candidate.post_id),
-        author_handle: normalizeHandle(stringValue(candidate.author_handle)),
-        candidate_score: Number(candidate.candidate_score || 0),
-      },
+      metadata: normalizeElythCandidateMetadata(candidate, 'like'),
     });
   }
   if (!actions.length && Array.isArray(input.skip) && input.skip.length) {
@@ -1321,6 +1443,7 @@ async function buildElythAudit(hours = 24) {
     self_post_absent_hours: lastSelfPostAt ? round((Date.now() - Date.parse(lastSelfPostAt)) / (60 * 60 * 1000), 1) : hours,
     sleep_skip_count: stats.sleep_skips?.length ?? 0,
     guard_block_count: stats.guard_blocks?.length ?? 0,
+    target_metadata_missing: stats.targetless_actions ?? {},
     surface_leakage_suspected: 0,
     human_auto_reply_count: 0,
     flags: buildElythActionBalance(stats).flags,
@@ -1334,6 +1457,7 @@ function formatElythAudit(audit) {
     `uniqueReplyUsers=${audit.unique_reply_users} topReplyUserShare=${audit.top_reply_user_share}`,
     `sameUserRepliesOverLimit=${audit.same_user_replies_over_limit} selfPostAbsentHours=${audit.self_post_absent_hours}`,
     `sleepSkip=${audit.sleep_skip_count} guardBlock=${audit.guard_block_count}`,
+    `targetMetadataMissing=${JSON.stringify(audit.target_metadata_missing ?? {})}`,
     `flags=${audit.flags.join(',') || 'none'}`,
     '',
     JSON.stringify(audit, null, 2),
@@ -1356,6 +1480,11 @@ async function readRecentElythActionStats(hours = 24) {
   const userActionCounts = {};
   const guardBlocks = [];
   const sleepSkips = [];
+  const targetlessActions = {
+    create_reply: 0,
+    like_post: 0,
+    follow_aituber: 0,
+  };
   try {
     const lines = (await readFile(path, 'utf-8')).trim().split(/\n/u).filter(Boolean);
     for (const line of lines) {
@@ -1396,6 +1525,8 @@ async function readRecentElythActionStats(hours = 24) {
           if (action.type === 'like_post') userActionCounts[targetKey].likes_to_user_24h += 1;
           if (action.type === 'follow_aituber') userActionCounts[targetKey].follows_24h += 1;
           userActionCounts[targetKey].last_interaction_at = report.createdAt || new Date(createdAt).toISOString();
+        } else if (action.type in targetlessActions) {
+          targetlessActions[action.type] += 1;
         }
       }
     }
@@ -1408,6 +1539,7 @@ async function readRecentElythActionStats(hours = 24) {
       user_action_counts: {},
       guard_blocks: [],
       sleep_skips: [],
+      targetless_actions: { create_reply: 0, like_post: 0, follow_aituber: 0 },
     };
   }
   return {
@@ -1418,6 +1550,7 @@ async function readRecentElythActionStats(hours = 24) {
     user_action_counts: userActionCounts,
     guard_blocks: guardBlocks,
     sleep_skips: sleepSkips,
+    targetless_actions: targetlessActions,
   };
 }
 
@@ -1428,7 +1561,9 @@ function elythActionTargetKey(action) {
     stringValue(meta.handle) ||
     stringValue(meta.platform_user_id) ||
     stringValue(meta.author_id) ||
-    stringValue(meta.username);
+    stringValue(meta.username) ||
+    stringValue(meta.author_display_name) ||
+    stringValue(meta.display_name);
   return normalizeHandle(raw) || null;
 }
 
@@ -1750,6 +1885,10 @@ function buildElythReplyCandidates({ information, actionBalance, internalState, 
         candidate_id: `reply:${post.post_id}`,
         post_id: post.post_id,
         author_handle: post.handle,
+        platform_user_id: post.platform_user_id,
+        display_name: post.display_name,
+        author_type: post.author_type,
+        source_type: post.source_type,
         candidate_score: candidateScore,
         priority: candidateScore >= 0.7 ? 'high' : candidateScore >= 0.45 ? 'medium' : 'low',
         relationship_summary: summarizeRelationshipForPlanner(social),
@@ -1812,6 +1951,11 @@ function buildElythLikeCandidates({ information, actionBalance, socialGraph }) {
         candidate_id: `like:${post.post_id}`,
         post_id: post.post_id,
         author_handle: post.handle,
+        platform_user_id: post.platform_user_id,
+        display_name: post.display_name,
+        author_type: post.author_type,
+        source_type: post.source_type,
+        relationship_summary: summarizeRelationshipForPlanner(social),
         candidate_score: round(clamp01(score), 2),
         priority: score >= 0.5 ? 'medium' : 'low',
         reasons: likes24h > 0 ? ['already_liked_recently_penalty'] : ['light_touch_available'],
