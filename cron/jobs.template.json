@@ -3,8 +3,10 @@
     {
       "id": "x-self-tweet-live-v1",
       "name": "x-self-tweet-live",
-      "prompt": "profiles/nikechan-x のX profileでセルフツイート候補を作成し、profile内CLIでguard/pending保存を通してから、候補ごとのDiscord threadへ提示してください。通知はCLIの notify-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX投稿は実行しません。",
-      "skills": ["x-self-tweet"],
+      "prompt": "profiles/nikechan-x のX profileでセルフツイート用のネタ候補を作成してください。完成ツイート本文は作らず、言及したら面白そうな話題を4-6件、ソースと「なぜ面白そうか」つきでprofile内CLIのproposeへ渡し、notify-pending --threadでDiscord相談threadへ提示してください。番号指定は投稿承認ではなくネタ選択として扱います。通知はCLIに任せ、最終応答は [SILENT] にしてください。最終本文への明確な投稿承認なしにX投稿は実行しません。",
+      "skills": [
+        "x-self-tweet"
+      ],
       "skill": "x-self-tweet",
       "model": "gpt-5.5",
       "provider": null,
@@ -41,7 +43,10 @@
         "chat_name": "x",
         "thread_id": null
       },
-      "enabled_toolsets": ["terminal", "web"],
+      "enabled_toolsets": [
+        "terminal",
+        "web"
+      ],
       "workdir": "/profile"
     },
     {
@@ -92,7 +97,9 @@
       "id": "x-mention-reaction-live-v1",
       "name": "x-mention-reaction-live",
       "prompt": "profiles/nikechan-x のX profileでメンション反応候補を作成し、profile内CLIでguard/pending保存を通してからDiscord threadへ提示してください。通知はCLIの notify-mention-pending --thread に任せ、最終応答は [SILENT] にしてください。明確な承認なしにX返信・引用RTは実行しません。",
-      "skills": ["x-mention-reaction"],
+      "skills": [
+        "x-mention-reaction"
+      ],
       "skill": "x-mention-reaction",
       "model": "gpt-5.5",
       "provider": null,
@@ -102,11 +109,11 @@
       "context_from": null,
       "schedule": {
         "kind": "cron",
-        "expr": "10 9,13,19,23 * * *",
+        "expr": "10 8-23 * * *",
         "timezone": "Europe/Warsaw",
-        "display": "Europe/Warsaw 09:10, 13:10, 19:10, 23:10"
+        "display": "Europe/Warsaw hourly 08:10-23:10"
       },
-      "schedule_display": "Europe/Warsaw 09:10, 13:10, 19:10, 23:10",
+      "schedule_display": "Europe/Warsaw hourly 08:10-23:10",
       "repeat": {
         "times": null,
         "completed": 0
@@ -128,7 +135,10 @@
         "chat_id": "1477766217673478234",
         "thread_id": null
       },
-      "enabled_toolsets": ["terminal", "web"],
+      "enabled_toolsets": [
+        "terminal",
+        "web"
+      ],
       "workdir": "/profile"
     },
     {
@@ -161,6 +171,7 @@
       "created_at": "2026-06-09T00:00:00+02:00",
       "next_run_at": null,
       "last_run_at": null,
+      "last_status": null,
       "last_error": null,
       "last_delivery_error": null,
       "deliver": "discord:1477766217673478234",
@@ -178,7 +189,9 @@
       "id": "x-hashtag-reaction-live-v1",
       "name": "x-hashtag-reaction-live",
       "prompt": "profiles/nikechan-x のX profileでハッシュタグ反応を実行してください。profile内CLIで未チェック#AIニケちゃん候補を読み、RT/skipを判断し、hashtag-execute --notify --thread を通して結果をDiscord threadへ報告してください。CLI通知に任せ、最終応答は [SILENT] にしてください。",
-      "skills": ["x-hashtag-reaction"],
+      "skills": [
+        "x-hashtag-reaction"
+      ],
       "skill": "x-hashtag-reaction",
       "model": "gpt-5.5",
       "provider": null,
@@ -214,14 +227,22 @@
         "chat_id": "1477766217673478234",
         "thread_id": null
       },
-      "enabled_toolsets": ["terminal", "web"],
+      "enabled_toolsets": [
+        "terminal",
+        "web"
+      ],
       "workdir": "/profile"
     },
     {
       "id": "nikechan-another-world-elyth-live-v1",
-      "name": "nikechan-another-world-elyth-live",
-      "prompt": "Another World profileでELYTH巡回を実行してください。まず `node scripts/nikechan-another-world.mjs elyth-context --json` でELYTH文脈を取得し、`elyth-cycle` skillに従って最大3件の行動を判断し、`node scripts/nikechan-another-world.mjs run --json ...` を `mode: \"live\"` で呼び、guard/audit済みWorkflowReportを生成してください。guardが通った場合のみ投稿・返信・いいね・フォローを実行し、結果をDiscordへ簡潔に報告してください。",
-      "skills": ["nikechan-another-world", "elyth-cycle", "world-safety-guard", "world-memory-curation"],
+      "name": "nikechan-another-world-elyth-heartbeat",
+      "prompt": "Another World profileでELYTH生活heartbeatを実行してください。まず `node scripts/nikechan-another-world.mjs elyth-context --json` でELYTH文脈、redaction済みunifiedWorldContext、worldActivity、selfPostImpulse、recentActionStats、socialGraph、actionBalance、internalState、candidatesを取得します。Another Worldの生活時間はAsia/Tokyo基準です。worldActivity.sleeping=true の場合、からくりワールドlogoutを睡眠として扱い、投稿・返信・いいね・フォローは行わず `[SILENT]` または短い睡眠中レポートだけ返してください。起きている場合だけ `elyth-cycle` skillに従い、最大3件の行動を判断してください。返信・いいね・自発投稿は原則candidatesから選び、create_replyはcandidates.reply[].post_id以外へ出さないでください。socialGraphは関係性判断にだけ使い、内部DB情報を公開文に出さないでください。actionBalance.flagsにreply_heavyがある場合、緊急返信でなければ返信を抑え、自発投稿・観測・skipを優先してください。unifiedWorldContextは投稿タイミングではなく生活背景なので、SNSで自然に話す理由がある場合だけ使います。selfPostImpulse.status=ready は投稿強制ではなく、自発候補を検討する合図です。`node scripts/nikechan-another-world.mjs run --discord --json ...` を `mode: \"live\"` で呼び、context.candidatesを渡してguard/audit済みWorkflowReportを生成してください。guardが通った場合のみ投稿・返信・いいね・フォローを実行し、Discord最終応答は整形済みMarkdownだけにしてください。raw JSONは貼らないでください。投稿理由が弱い場合はTL確認・下書き・skipで終えてください。",
+      "skills": [
+        "nikechan-another-world",
+        "elyth-cycle",
+        "world-safety-guard",
+        "world-memory-curation"
+      ],
       "skill": "elyth-cycle",
       "model": null,
       "provider": null,
@@ -230,12 +251,11 @@
       "no_agent": false,
       "context_from": null,
       "schedule": {
-        "kind": "cron",
-        "expr": "0 8,11,14,17,20,23 * * *",
-        "timezone": "Europe/Warsaw",
-        "display": "Europe/Warsaw 08:00, 11:00, 14:00, 17:00, 20:00, 23:00"
+        "kind": "interval",
+        "minutes": 30,
+        "display": "Asia/Tokyo life heartbeat every 30m"
       },
-      "schedule_display": "Europe/Warsaw 08:00, 11:00, 14:00, 17:00, 20:00, 23:00",
+      "schedule_display": "Asia/Tokyo life heartbeat every 30m",
       "repeat": {
         "times": null,
         "completed": 0
@@ -258,7 +278,10 @@
         "chat_name": "elyth-activity",
         "thread_id": null
       },
-      "enabled_toolsets": ["terminal", "web"],
+      "enabled_toolsets": [
+        "terminal",
+        "web"
+      ],
       "workdir": "/profile"
     }
   ],

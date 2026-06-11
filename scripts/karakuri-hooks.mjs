@@ -64,10 +64,11 @@ async function preprocess(notificationId, payload) {
       people,
     }),
   ]);
-  const [recentLogs, pendingCommitments, memoryEntries] = await Promise.all([
+  const [recentLogs, pendingCommitments, memoryEntries, unifiedWorldContext] = await Promise.all([
     fetchRecentActivityLogs(),
     fetchPendingCommitments(),
     fetchMemoryEntries(),
+    fetchUnifiedWorldContext('karakuri'),
   ]);
   return {
     ...payload,
@@ -86,9 +87,12 @@ async function preprocess(notificationId, payload) {
         pending_commitments: pendingCommitments,
         recent_memory_entries: memoryEntries,
         recent_activity_logs: recentLogs,
+        unified_world_context: unifiedWorldContext,
       },
       decision_guidance: [
         'notification.choices から最大1つだけ選ぶ',
+        'unified_world_context は生活背景としてだけ使い、notification.choices / pending_commitments / 現在状態を優先する',
+        'ELYTHの投稿本文・相手発言・内部IDをからくり発話へ直接持ち込まない',
         'pending_commitments が期限間近なら、選択肢内で約束の遂行に近い行動を優先する',
         'recent_memory_entries / recent_activity_logs と同じ情報取得や同じ行動の連続を避ける',
         '会話できる相手がいる場合は、waitより自然な会話継続を優先する',
@@ -248,6 +252,7 @@ async function addObservedSpeechEpisodes({ logId, conversationMessages, people }
         event_type: 'observation',
         source_table: 'karakuri_activity_logs',
         source_record_id: `${logId}:speech:${person.agentId}:${index}`,
+        metadata: { relationship_modality: 'embodied_world_acquaintance' },
       });
       await touchUser(person.userId);
     })
@@ -275,6 +280,7 @@ async function addConversationContactEpisode({ actionLogId, sourceRequest, comma
         event_type: 'conversation',
         source_table: 'karakuri_activity_logs',
         source_record_id: `${actionLogId}:conversation:${person.agentId}`,
+        metadata: { relationship_modality: 'embodied_world_acquaintance' },
       });
       await touchUser(person.userId);
     })
@@ -549,6 +555,59 @@ async function fetchMemoryEntries() {
   return rows.slice(-12);
 }
 
+async function fetchUnifiedWorldContext(surface) {
+  const targetDate = tokyoDate();
+  const scope = process.env.NIKECHAN_WORLD_CONTEXT_SCOPE || 'another-world';
+  const params = new URLSearchParams({
+    target_date: `eq.${targetDate}`,
+    scope: `eq.${scope}`,
+    status: 'eq.generated',
+    order: 'generated_at.desc',
+    limit: '1',
+    select: '*',
+  });
+  const rows = await sbGet(`world_state_snapshots?${params}`);
+  return normalizeUnifiedWorldContext(rows?.[0] ?? { status: 'missing', target_date: targetDate }, surface);
+}
+
+function normalizeUnifiedWorldContext(snapshot, surface) {
+  const record = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) ? snapshot : {};
+  const sections = record.sections && typeof record.sections === 'object' && !Array.isArray(record.sections)
+    ? record.sections
+    : {};
+  const modalities =
+    sections.relationship_modalities && typeof sections.relationship_modalities === 'object' && !Array.isArray(sections.relationship_modalities)
+      ? sections.relationship_modalities
+      : {};
+  const surfaceRules = sections.surface_rules && typeof sections.surface_rules === 'object' && !Array.isArray(sections.surface_rules)
+    ? sections.surface_rules
+    : {};
+  return {
+    generated_at: record.generated_at ?? null,
+    target_date: record.target_date ?? tokyoDate(),
+    surface,
+    status: record.status ?? 'missing',
+    summary: stringValue(record.summary),
+    current_places: stringArray(sections.current_places),
+    recent_social: stringArray(sections.recent_social),
+    active_commitments: stringArray(sections.active_commitments),
+    mood_hints: stringArray(sections.mood_hints),
+    open_impulses: stringArray(sections.open_impulses),
+    relationship_modalities: {
+      karakuri: stringValue(modalities.karakuri) || 'embodied_world_acquaintance',
+      elyth: stringValue(modalities.elyth) || 'sns_only_acquaintance',
+    },
+    surface_rule: stringValue(surfaceRules[surface]),
+    constraints: [
+      'raw ELYTH posts, raw Karakuri notifications, internal IDs, and private ops context must not be transferred across surfaces',
+      'this world context is background; surface-local notification, choices, commitments, and safety guards take priority',
+    ],
+    source_event_count: Array.isArray(record.source_event_ids) ? record.source_event_ids.length : 0,
+    redaction_status: record.redaction_status ?? 'redacted',
+    policy_version: record.policy_version ?? 'unified-world-v1',
+  };
+}
+
 async function sbGet(path) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -613,6 +672,10 @@ function stringValue(value) {
   return typeof value === 'string' ? value : value == null ? '' : String(value);
 }
 
+function stringArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
+}
+
 function truncate(value, max) {
   const text = String(value ?? '');
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -651,6 +714,15 @@ function jstTimeText() {
   }).formatToParts(new Date());
   const byType = Object.fromEntries(parts.map((p) => [p.type, p.value]));
   return `${byType.hour}:${byType.minute}`;
+}
+
+function tokyoDate(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
 }
 
 function buildCommitmentDescription(speaker, message, locationName) {
