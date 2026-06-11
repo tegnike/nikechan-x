@@ -13,7 +13,7 @@ const STATE_DIR = process.env.NIKECHAN_X_STATE_DIR || resolve(ROOT, 'state');
 const ACCOUNT_NAME = process.env.X_ACCOUNT_NAME || 'ai_nikechan';
 const SOURCE_MODES = ['presence', 'daily_life', 'tech', 'news', 'memory', 'random'];
 const AI_NEWS_LIST_URL = 'https://nikechan.com/ai-news';
-const AI_NEWS_TWEET_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const AI_NEWS_TWEET_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 const X_URL_WEIGHT = 23;
 const DISCORD_THREAD_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DISCORD_THREAD_REGISTRY_PATH = resolve(ROOT, 'discord_threads.json');
@@ -2171,7 +2171,7 @@ async function recordAiNewsTweetExecution(candidates, execution) {
 
 async function selectAiNewsTweetItem(limit = 30) {
   const [newsResult, presentedState, executedState] = await Promise.all([
-    supabaseGet(`public_ai_character_news?order=published_at.desc.nullslast,created_at.desc&limit=${Number(limit) || 30}&select=id,url,title,source_name,source_domain,published_at,summary,nike_comment,category,tags,created_at`),
+    supabaseGet(`public_ai_character_news?order=discovered_at.desc.nullslast,published_at.desc.nullslast,created_at.desc&limit=${Number(limit) || 30}&select=id,url,title,source_name,source_domain,published_at,discovered_at,summary,nike_comment,category,tags,created_at`),
     getTwitterRunStateValue('ai_news_tweet_presented_items'),
     getTwitterRunStateValue('ai_news_tweet_executed_items'),
   ]);
@@ -2187,8 +2187,10 @@ async function selectAiNewsTweetItem(limit = 30) {
 }
 
 export function isRecentAiNewsItem(item, nowMs = Date.now(), maxAgeMs = AI_NEWS_TWEET_MAX_AGE_MS) {
-  const timestamp = Date.parse(item?.created_at || item?.published_at || '');
-  return Number.isFinite(timestamp) && nowMs - timestamp < maxAgeMs;
+  const discoveredAt = Date.parse(item?.discovered_at || item?.created_at || '');
+  const publishedAt = Date.parse(item?.published_at || item?.created_at || '');
+  return Number.isFinite(discoveredAt) && nowMs - discoveredAt < maxAgeMs
+    && Number.isFinite(publishedAt) && nowMs - publishedAt < maxAgeMs;
 }
 
 export function buildAiNewsTweetText(item) {
