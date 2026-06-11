@@ -26,6 +26,8 @@ COPY patches/hermes-agent/cron-error-deliver.py /tmp/cron-error-deliver.py
 RUN python3 /tmp/cron-error-deliver.py && rm /tmp/cron-error-deliver.py
 COPY patches/hermes-agent/fresh-message-session.py /tmp/fresh-message-session.py
 RUN python3 /tmp/fresh-message-session.py && rm /tmp/fresh-message-session.py
+COPY patches/hermes-agent/patch-elyth-cron-wrapper.py /tmp/patch-elyth-cron-wrapper.py
+RUN python3 /tmp/patch-elyth-cron-wrapper.py && rm /tmp/patch-elyth-cron-wrapper.py
 
 COPY docker-entrypoint.sh /usr/local/bin/nikechan-x-entrypoint
 RUN chmod +x /usr/local/bin/nikechan-x-entrypoint
