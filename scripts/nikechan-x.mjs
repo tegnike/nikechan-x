@@ -260,8 +260,8 @@ Commands:
   notify-mention-pending [--channel <discord_channel_id>] [--thread]
   thread-context --thread-id <discord_thread_id>
   cleanup-threads [--channel <discord_channel_id>]
-  mention-resolve --text <discord reply> [--notify]
-  mention-approve --ids m1,m2
+  mention-resolve --text <discord reply> [--thread-id <discord_thread_id>] [--notify]
+  mention-approve [--thread-id <discord_thread_id>] [--ids m1,m2]
   mention-cancel [--reason "..."]
   hashtag-context
   hashtag-execute --items-json '{"items":[...]}' [--notify] [--thread]
@@ -913,22 +913,21 @@ async function commandNotifyMentionPending(options) {
 }
 
 async function commandMentionResolve(options) {
-  const pending = await readMentionPending();
-  if (!pending) throw new Error('no pending mention-reaction');
+  const threadId = options.threadId || options["thread-id"];
+  const match = threadId
+    ? await readMentionPendingForThread(threadId)
+    : { pending: await readMentionPending(), path: statePath("pending-mention-reaction.json"), current: true };
+  const pending = match.pending;
+  if (!pending) throw new Error(threadId ? `no pending mention-reaction for thread: ${threadId}` : 'no pending mention-reaction');
   const text = required(options.text, '--text');
-  const actionableIds = pending.items
-    .filter((item) => item.replyAction === 'reply' || item.quoteAction === 'quote')
-    .map((item) => item.id);
-  const approvalIds = actionableIds.length === 1 && hasApprovalIntent(text)
-    ? actionableIds
-    : pending.items.map((item) => item.id);
-  const decision = parseReactionApprovalReply(text, approvalIds);
+  const decision = parseReactionApprovalReply(text, mentionApprovalDefaultIds(pending));
   const channel = options.channel || pending.threadId || process.env.DISCORD_HOME_CHANNEL;
   const shouldNotify = options.notify === true || options.notify === 'true';
 
   if (decision.action === 'approve') {
-    await commandMentionApprove({ ids: decision.ids.join(',') });
-    if (shouldNotify && channel) await sendDiscordMessage(channel, `承認を受け付けました: ${decision.ids.join(', ')}`);
+    const ids = decision.ids?.length ? decision.ids : mentionApprovalDefaultIds(pending);
+    await commandMentionApprove({ ids: ids.join(','), threadId });
+    if (shouldNotify && channel) await sendDiscordMessage(channel, `承認を受け付けました: ${ids.join(', ')}`);
     return;
   }
   if (decision.action === 'cancel') {
@@ -967,14 +966,16 @@ async function commandMentionApprove(options) {
     : { pending: await readMentionPending(), path: statePath("pending-mention-reaction.json"), current: true };
   const pending = match.pending;
   if (!pending) throw new Error(threadId ? `no pending mention-reaction for thread: ${threadId}` : "no pending mention-reaction");
-  const ids = String(options.ids || options.id || "").split(",").map((id) => normalizeReactionItemId(id, "m")).filter(Boolean);
-  if (!ids.length) throw new Error("missing --ids");
-  const selected = pending.items.filter((item) => ids.includes(item.id));
-  if (!selected.length) throw new Error(`no mention items matched: ${ids.join(",")}`);
+  const explicitIds = String(options.ids || options.id || "").split(",").map((id) => normalizeReactionItemId(id, "m")).filter(Boolean);
+  const ids = explicitIds.length ? explicitIds : mentionApprovalDefaultIds(pending);
+  if (!ids.length) throw new Error("missing --ids and no actionable mention items");
+  const alreadyExecuted = mentionExecutedItemIds(pending);
+  const selected = pending.items.filter((item) => ids.includes(item.id) && !alreadyExecuted.has(item.id));
+  if (!selected.length) throw new Error(`no unexecuted mention items matched: ${ids.join(",")}`);
   const result = await executeMentionReactions(selected, pending);
   await writeJsonAtomic(statePath("last-mention-reaction-result.json"), result);
   if (match.current) {
-    await removeMentionPending();
+    await closeMentionPending(result);
   } else {
     await markArchivedMentionPendingExecuted(match.path, result);
   }
@@ -1822,15 +1823,32 @@ function parseReactionApprovalReply(text, itemIds = []) {
     if (ids.includes(id)) selected.add(id);
   }
   if (selected.size > 0) return { action: 'approve', ids: [...selected] };
-  if (/ok|OK|承認|投稿して|リプして|引用して|実行して|post/u.test(normalized)) {
-    if (ids.length === 1) return { action: 'approve', ids };
-    return { action: 'needs_id', reason: 'multiple candidates need explicit ids' };
-  }
+  if (hasApprovalIntent(normalized)) return { action: 'approve', ids };
   return { action: 'unknown', reason: 'no approval intent detected' };
 }
 
 function hasApprovalIntent(text) {
-  return /ok|OK|承認|投稿して|リプして|返信OK|引用して|実行して|post/u.test(String(text || ''));
+  return /ok|OK|承認|投稿して|リプして|返信OK|引用して|実行して|post|どうぞ|お願い|そのまま|これで|いいよ|進めて|やって/u.test(String(text || ''));
+}
+
+function mentionApprovalDefaultIds(pending) {
+  if (!Array.isArray(pending?.items)) return [];
+  const executed = mentionExecutedItemIds(pending);
+  const actionable = pending.items
+    .filter((item) => !executed.has(item.id) && (item.replyAction === 'reply' || item.quoteAction === 'quote'))
+    .map((item) => item.id)
+    .filter(Boolean);
+  if (actionable.length) return actionable;
+  return pending.items.map((item) => item.id).filter((id) => id && !executed.has(id));
+}
+
+function mentionExecutedItemIds(pending) {
+  const results = Array.isArray(pending?.executionResult?.results) ? pending.executionResult.results : [];
+  return new Set(results.map((entry) => entry.itemId || entry.item_id).filter(Boolean));
+}
+
+function hasRemainingMentionApprovalItems(pending) {
+  return mentionApprovalDefaultIds(pending).length > 0;
 }
 
 function normalizeReactionItemId(value, prefix) {
@@ -2772,13 +2790,15 @@ async function findArchivedMentionPendingByThread(threadId) {
   const matches = [];
   for (const name of names) {
     if (!/^pending-mention-reaction\..*\.json$/.test(name)) continue;
-    if (name.includes(".executed-") || name.includes(".cancelled-") || name.includes(".closed.")) continue;
+    if (name.includes(".executed-") || name.includes(".cancelled-")) continue;
     const path = statePath(name);
     const pending = await readJson(path, null);
     const reason = String(pending?.archiveReason || pending?.status || name);
-    if (!reason.includes("superseded")) continue;
+    const canRecoverClosed = name.includes(".closed.") && hasRemainingMentionApprovalItems(pending);
+    if (!reason.includes("superseded") && !canRecoverClosed) continue;
     if (!pending?.threadId || String(pending.threadId) !== threadId) continue;
-    if (pending.executedAt || pending.cancelledAt) continue;
+    if (pending.cancelledAt) continue;
+    if (pending.executedAt && !hasRemainingMentionApprovalItems(pending)) continue;
     matches.push({ pending, path, current: false, sortKey: archivedPendingSortKey(name, pending) });
   }
   matches.sort((a, b) => b.sortKey - a.sortKey);
@@ -2836,7 +2856,7 @@ async function findPendingByThreadId(threadId) {
         'Use the current pending candidates below as the source of truth.',
         'Do not execute self-tweet pending from this thread.',
         'Judge the master reply by intent, not by fixed approval words.',
-        `If the reply approves the current candidates, call mention-approve --thread-id ${normalized} with the selected item IDs.`,
+        `If the reply approves all current candidates, call mention-approve --thread-id ${normalized} without --ids. Add --ids only when the reply selects specific item IDs.`,
         'If the reply asks for changes, revise the full items JSON and call mention-propose --preserve-thread true.',
         'If the reply asks a question or asks to review context, answer briefly and keep the pending state.',
       ],
@@ -2908,6 +2928,23 @@ async function archiveMentionPending(pending, reason) {
 async function removeMentionPending() {
   const path = statePath('pending-mention-reaction.json');
   if (!existsSync(path)) return;
+  await rename(path, statePath(`pending-mention-reaction.${Date.now()}.closed.json`));
+}
+
+async function closeMentionPending(result) {
+  const path = statePath('pending-mention-reaction.json');
+  if (!existsSync(path)) return;
+  if (result) {
+    const pending = await readJson(path, null);
+    if (pending) {
+      await writeJsonAtomic(path, {
+        ...pending,
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+        executionResult: result,
+      });
+    }
+  }
   await rename(path, statePath(`pending-mention-reaction.${Date.now()}.closed.json`));
 }
 

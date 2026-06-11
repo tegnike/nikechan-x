@@ -62,21 +62,53 @@ def _find_archived_mention_for_thread(thread_id: str) -> dict[str, Any] | None:
     matches: list[tuple[int, dict[str, Any]]] = []
     for path in STATE_DIR.glob("pending-mention-reaction.*.json"):
         name = path.name
-        if ".executed-" in name or ".cancelled-" in name or ".closed." in name:
+        if ".executed-" in name or ".cancelled-" in name:
             continue
         pending = _read_json(path)
         reason = str(pending.get("archiveReason") or pending.get("status") or name)
-        if "superseded" not in reason:
+        remaining_ids = _remaining_mention_ids(pending)
+        is_closed = ".closed." in name
+        if not is_closed and "superseded" not in reason:
+            continue
+        if is_closed and not remaining_ids:
             continue
         if str(pending.get("threadId") or "") != thread_id:
             continue
-        if pending.get("executedAt") or pending.get("cancelledAt"):
+        if pending.get("cancelledAt"):
+            continue
+        if pending.get("executedAt") and not remaining_ids:
             continue
         matches.append((_archived_sort_key(path, pending), pending))
     if not matches:
         return None
     matches.sort(key=lambda item: item[0], reverse=True)
     return matches[0][1]
+
+
+def _remaining_mention_ids(pending: dict[str, Any]) -> list[str]:
+    items = pending.get("items")
+    if not isinstance(items, list):
+        return []
+    executed = _executed_mention_ids(pending)
+    actionable = [
+        str(item.get("id"))
+        for item in items
+        if item.get("id") and str(item.get("id")) not in executed
+        and (item.get("replyAction") == "reply" or item.get("quoteAction") == "quote")
+    ]
+    if actionable:
+        return actionable
+    return [str(item.get("id")) for item in items if item.get("id") and str(item.get("id")) not in executed]
+
+
+def _executed_mention_ids(pending: dict[str, Any]) -> set[str]:
+    result = pending.get("executionResult")
+    if not isinstance(result, dict):
+        return set()
+    results = result.get("results")
+    if not isinstance(results, list):
+        return set()
+    return {str(entry.get("itemId") or entry.get("item_id")) for entry in results if isinstance(entry, dict) and (entry.get("itemId") or entry.get("item_id"))}
 
 
 def _archived_sort_key(path: Path, pending: dict[str, Any]) -> int:
@@ -110,11 +142,12 @@ def _build_rewrite_prompt(match: dict[str, Any], master_reply: str) -> str:
 
 判断方針:
 - 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認です。
-- 番号や m1/m2 指定があれば該当候補だけ、指定がなければ現在提示中の実行対象を承認します。
+- 番号や m1/m2 指定があれば該当候補だけを承認します。
+- 番号指定のない承認語なら、CLI側で現在提示中の実行対象を全件選ぶため `--ids` を付けないでください。
 - 「ここをこう変えて」「もう少し柔らかく」「この文だけ直して」などは修正です。LLM判断で候補全文を作り直し、`node scripts/nikechan-x.mjs mention-propose --preserve-thread true --items-json '<json>'` を実行してください。
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持してください。
 - このthreadでは self-tweet pending を実行しないでください。{archived_note}
-- 承認時は `node scripts/nikechan-x.mjs mention-approve --thread-id {thread_id} --ids ...` だけを実行し、結果を短く報告してください。
+- 承認時は `node scripts/nikechan-x.mjs mention-approve --thread-id {thread_id}` を実行してください。番号指定がある場合だけ `--ids m1,m2` を付けます。
 
 Discordへの返答スタイル:
 - マスターには内部コマンド、pending ID、`needs_approval`、JSON、実行ログを見せないでください。マスターが明示的にログ確認を求めた場合だけ最小限に出します。
@@ -162,6 +195,13 @@ def _compact_pending(workflow: str, pending: dict[str, Any]) -> dict[str, Any]:
         "revisionCount": pending.get("revisionCount", 0),
     }
     if workflow == "mention-reaction":
+        remaining_ids = set(_remaining_mention_ids(pending))
+        executed_ids = sorted(_executed_mention_ids(pending))
+        source_items = pending.get("items", [])
+        if executed_ids:
+            source_items = [item for item in source_items if str(item.get("id") or "") in remaining_ids]
+        base["remainingItemIds"] = sorted(remaining_ids)
+        base["executedItemIds"] = executed_ids
         base["items"] = [
             {
                 "id": item.get("id"),
@@ -179,7 +219,7 @@ def _compact_pending(workflow: str, pending: dict[str, Any]) -> dict[str, Any]:
                 "quoteText": item.get("quoteText"),
                 "reason": item.get("reason"),
             }
-            for item in pending.get("items", [])
+            for item in source_items
         ]
         base["candidates"] = [
             {
