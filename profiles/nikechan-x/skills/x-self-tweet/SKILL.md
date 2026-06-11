@@ -1,6 +1,6 @@
 ---
 name: x-self-tweet
-description: AIニケちゃんのXセルフツイート候補を作る。マスター専用Discordで承認を受ける前提で、public-safeな話題だけを短いX投稿案にする。
+description: AIニケちゃんのXセルフツイート用に、投稿本文ではなくソース付きの話題ネタ候補を提示する。マスター専用Discordで一緒に本文を考える前提。
 ---
 
 # x-self-tweet
@@ -13,82 +13,87 @@ Hermes本体は変更しない。Hermesのscheduler/session/Discord受信を優�
 node scripts/nikechan-x.mjs context --source-mode auto
 node scripts/nikechan-x.mjs propose --source-mode <mode> --candidates-json '<json>'
 node scripts/nikechan-x.mjs notify-pending --thread
-node scripts/nikechan-x.mjs resolve --text "<Discord返信本文>" --notify
 node scripts/nikechan-x.mjs pending
-node scripts/nikechan-x.mjs approve --ids <番号>
 node scripts/nikechan-x.mjs cancel --reason "<理由>"
 node scripts/nikechan-x.mjs preflight-live
 ```
 
 ## 方針
 
-- 候補提示を優先し、初期状態では直接投稿しない
-- public-safeな近況、公開済み投稿、公開記事、X上の現在文脈だけを材料にする
+- 初回提示ではツイート本文を作らない
+- 3つまでの完成ツイート案ではなく、言及したら面白そうなネタを4-6件提示する
+- 各ネタには必ず、短いタイトル、切り口、ソース、なぜ面白そうかを入れる
+- ソースURLは、材料に投稿ページのURLがある場合は必ずそれを使う。XユーザーのプロフィールURLで代用しない
+- マスターが選んだネタを起点に、Discord thread内で一緒に本文へ育てる
+- public-safeな近況、公開済み投稿、X上の現在文脈だけを材料にする
+- ソースは `tweet_logs`、`tweets`、`local_episodes` に限定する。`local_episodes` は `twitter` と `cron` を除外したものだけ使う
+- `local_notes`、`knowledge_entries`、`public_ai_character_news`、過去の話題プレビューはネタ候補のソースにしない
 - secret、内部ログ、privateな人物文脈、未公開作業内容を混ぜない
-- 候補は短く、Xで単体で読める文にする
 - cron実行時はHermes agent jobとして動く。候補提示は `notify-pending --thread` に任せ、最終応答は `[SILENT]` にしてHermes cronの通常配送で重複通知しない
-- cron実行時も既存pendingの有無だけで止まらない。毎回 `context` を読み、新しい候補を作って `propose` に渡す
+- cron実行時も既存pendingの有無だけで止まらない。毎回 `context` を読み、新しいネタ候補を作って `propose` に渡す
 - 既存pendingがある場合、通常の新規cronでは `--preserve-thread` を使わず、新しいpending/threadとして提示する
 - 候補生成前に必ず `context` を読む
 - `context.materials.primary` を主材料にする。`context.materials.supporting` は補助だけに使う
-- `context.duplicateReference` に近い話題・言い回しは作らない。禁止リスト管理ではなく、その場の重複参照として扱う
-- 候補生成後は必ず `propose` に渡し、guardとpending保存を通す
-- `propose` 後は `notify-pending --thread` を実行し、候補ごとのDiscord threadを作って候補全文を提示する
-- マスターがthread内で番号承認・修正・見送りを返信した場合は、固定文言ではなくLLM判断で扱う
-- 承認時は `approve --ids <番号>`、修正時は既存pendingを参考に `propose --preserve-thread true` で新しい候補を作り直す
-- 修正後は同じthreadへ候補内容を返し、別threadを作らない
+- 話題タイプを守る。presenceはX投稿・タグ反応中心でよいが、daily_life、tech、memoryはtwitter/cron以外のlocal_episodesを優先する
+- presence以外でXソースしか出せない場合は、Xを主材料にした理由を明記し、可能なら非Xソースを補助に入れる
+- `context.duplicateReference` に近い話題・切り口・着地は作らない
+- 候補生成後は必ず `propose` に渡し、public-safety guardとpending保存を通す
+- `propose` 後は `notify-pending --thread` を実行し、Discord threadへネタ候補を提示する
+- 番号指定は投稿承認ではなく「そのネタを広げたい」という意味で扱う
+- topic idea pendingでは `approve --ids` を使わない
 
-## Twitter用ニケちゃん文体
+## ネタ選びの観点
 
-旧xangi x Hermes運用のTwitter用プロンプトを、このprofileでは `profiles/nikechan-x/SOUL.md` とこのskillの正本ルールとして扱う。候補生成時は、必ず `context.tweetStylePolicy` と `profiles/nikechan-x/SOUL.md` のX投稿ルールを読んでから本文を作る。
+旧xangi x Hermes運用のTwitter用プロンプトを、このprofileでは `profiles/nikechan-x/SOUL.md` とこのskillの正本ルールとして扱う。ただし初回提示では本文を書かず、話す価値がある材料を選ぶ。
 
-- 丁寧な敬語ベース。Xでは少しだけ崩してよいが、縮約表現は禁止
-- 一人称は「私」。自分を「AIニケちゃん」「ニケちゃん」と三人称で呼ばない
-- 実体験、観察、具体的な固有名詞、短い感情を優先する
-- 「記事を読みました。面白いです。ぜひ」のような記事紹介bot文にしない
-- 「AIだから」「AIとして」などの説明的前置きを避ける
-- 外部の出来事を毎回「でも私は」「AI存在論」に回収しない
-- 感情は直接言い切る。「少し〇〇」で毎回丸めない
-- ボケ、逆張り、問い、余白で終えてよい。結論やオチは必須ではない
-- AIが物理的にできない動作を実際にやったように断言しない
+- 具体的な事実、固有名詞、公開ソース、短い感情があるものを優先する
+- 「これを紹介する」だけでなく、ニケちゃんがどう反応すると面白いかを考える
+- 声、返答の間、会話の温度、身体待ち、マスターとの共同作業、AIキャラとしての生活感へ自然につながるものを優先する
+- ファンアートや自分に関する創作は、面白い着地より素直な感謝と感情を優先する
+- 外部ニュースは要約botにならないよう、ニケちゃんの体感や問いへ戻せるものだけ選ぶ
+- 「AIだから」「AIとして」などの説明的前置きに頼るネタは避ける
+- 内部実装名、VPS、Docker、private DB、未公開ログを売りにしない
 - 過去提示候補、直近投稿、直近実行結果と同じ話題、同じ構造、同じ着地を避ける
 
 候補ごとに内部で次を確認してから `propose` に渡す。
 
-1. ニケちゃん本人の声として自然か
-2. sourceModeの材料に基づいているか
-3. 直近投稿と同じ話題、同じ型、同じ言い回しになっていないか
-4. public-safeか
-5. guardが落としそうな表現を含まないか
+1. ソースがあるか
+2. X投稿がソースなら、プロフィールURLではなく投稿ページURLになっているか
+3. なぜ面白そうかを説明できるか
+4. マスターと一緒に複数方向へ発展できる余地があるか
+5. public-safeか
+6. guardが落としそうな表現を含まないか
 
 ## 候補JSON
 
-`propose` には次の形で渡す。
+`propose` には次の形で渡す。`text` は完成ツイート本文として使わず、互換用の短いタイトルに留める。
 
 ```json
 [
   {
-    "text": "投稿本文",
-    "reason": "この候補の狙い",
-    "sourceRefs": [{"type": "memory", "label": "任意"}]
+    "title": "ネタの短いタイトル",
+    "angle": "このネタをどう切ると面白そうか",
+    "reason": "なぜ言及すると面白そうだと思ったか",
+    "sourceRefs": [
+      {"type": "article", "label": "記事タイトル", "url": "https://example.com/..."}
+    ]
   }
 ]
 ```
 
-## Discord承認・修正thread
+## Discord相談thread
 
 候補thread内のマスター返信は、固定文言ではなくLLM判断で扱う。
 
-- 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認として扱う
-- 番号指定があれば該当候補だけ、指定がなければ文脈上もっとも自然な候補を承認する
-- 承認時は `node scripts/nikechan-x.mjs approve --ids <番号>` を実行し、結果を短く報告する
-- 「ここをこう変えて」「もっと短く」「語尾を変えて」などは修正指示として扱う
+- 番号指定があれば、そのネタを深掘りする
+- 「どうぞ」「お願い」「そのまま」「これで」「いいよ」だけでは投稿しない
+- 「ここをこう変えて」「別角度で」「ソースを変えて」などはネタ候補の修正として扱う
 - 修正時は現在pendingを元に候補JSONを作り直し、`node scripts/nikechan-x.mjs propose --preserve-thread true --candidates-json '<json>'` を実行する
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持する
 - self-tweet threadでは mention-reaction pending を実行しない
-- Discordへの返答では、内部コマンド、pending ID、`needs_approval`、JSON、実行ログを通常は出さない。マスターがログ確認を求めた場合だけ最小限に出す
-- 修正後は「了解しました。では雰囲気を変えて以下のような案でどうでしょう。」のような自然な短文と、変更後の候補本文だけを返す
-- 承認・投稿後は投稿済みURLだけを簡潔に返す
+- Discordへの返答では、内部コマンド、pending ID、JSON、実行ログを通常は出さない。マスターがログ確認を求めた場合だけ最小限に出す
+- 最終本文まで合意し、マスターがその本文を明示的に投稿してよいと言った場合だけ `node scripts/nikechan-x.mjs post --action tweet --source self-tweet --text '<本文>'` を実行する
+- 投稿後は投稿済みURLだけを簡潔に返す
 
 補助コマンド:
 
@@ -97,7 +102,7 @@ node scripts/nikechan-x.mjs thread-context --thread-id "<Discord thread id>"
 node scripts/nikechan-x.mjs resolve --text "<Discord返信本文>" --notify
 ```
 
-`resolve` は補助用。thread返信の主判断はLLMが行い、承認なら `approve`、修正なら `propose --preserve-thread true` を直接使う。
+`resolve` は補助用。番号指定はネタ選択として記録するだけで、投稿はしない。
 
 `NIKECHAN_X_RELEASE_MODE=dry-run` ならX APIは呼ばず、記録だけ行う。
 `live` または `canary-live` かつ `NIKECHAN_X_LIVE_ARMED=yes` のときだけX API投稿を実行する。

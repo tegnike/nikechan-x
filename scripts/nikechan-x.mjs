@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHmac, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile, appendFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile, appendFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,13 +11,14 @@ const X_PROFILE_DIR = resolve(ROOT, 'profiles', 'nikechan-x');
 const X_PROFILE_SOUL = resolve(X_PROFILE_DIR, 'SOUL.md');
 const STATE_DIR = process.env.NIKECHAN_X_STATE_DIR || resolve(ROOT, 'state');
 const ACCOUNT_NAME = process.env.X_ACCOUNT_NAME || 'ai_nikechan';
-const SOURCE_MODES = ['presence', 'daily_life', 'tech', 'news', 'memory', 'random'];
+const AUTO_SOURCE_MODES = ['presence', 'daily_life', 'tech', 'memory', 'random'];
+const SOURCE_MODES = [...AUTO_SOURCE_MODES, 'news'];
 const AI_NEWS_LIST_URL = 'https://nikechan.com/ai-news';
 const AI_NEWS_TWEET_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 const X_URL_WEIGHT = 23;
 const DISCORD_THREAD_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DISCORD_THREAD_REGISTRY_PATH = resolve(ROOT, 'discord_threads.json');
-const DISCORD_THREAD_NAME_PREFIXES = ['X候補', 'Xネタ', 'Xメンション', 'Xハッシュタグ', 'AITuberニュース', 'Xレポート'];
+const DISCORD_THREAD_NAME_PREFIXES = ["X候補", "Xネタ", "Xメンション", "Xハッシュタグ", "AITuberニュース", "Xレポート"];
 
 await loadDotenv(resolve(ROOT, '.env'));
 
@@ -28,7 +29,7 @@ export function guardText(text, options = {}) {
   const length = tweetWeightedLength(normalized);
 
   if (!normalized) errors.push('empty text');
-  if (length > 280) errors.push(`too long: ${length}/280`);
+  if (options.maxLength !== false && length > 280) errors.push(`too long: ${length}/280`);
 
   const secretPatterns = [
     /\bsk-[A-Za-z0-9_-]{20,}\b/u,
@@ -91,9 +92,9 @@ export function guardText(text, options = {}) {
 }
 
 export function nextSourceMode(previous) {
-  const index = SOURCE_MODES.indexOf(previous);
+  const index = AUTO_SOURCE_MODES.indexOf(previous);
   if (index < 0) return 'presence';
-  return SOURCE_MODES[(index + 1) % SOURCE_MODES.length];
+  return AUTO_SOURCE_MODES[(index + 1) % AUTO_SOURCE_MODES.length];
 }
 
 export function parseApprovalReply(text, candidateIds = []) {
@@ -109,7 +110,7 @@ export function parseApprovalReply(text, candidateIds = []) {
   }
 
   if (/全部|すべて|全て|all/u.test(normalized)) {
-    return { action: 'approve', ids };
+    return { action: 'select', ids };
   }
 
   const selected = new Set();
@@ -119,12 +120,15 @@ export function parseApprovalReply(text, candidateIds = []) {
     if (ids.includes(id)) selected.add(id);
   }
   if (selected.size > 0) {
-    return { action: 'approve', ids: [...selected] };
+    return { action: 'select', ids: [...selected] };
   }
 
-  if (/ok|OK|承認|投稿して|ツイートして|post/u.test(normalized)) {
-    if (ids.length === 1) return { action: 'approve', ids };
-    return { action: 'needs_id', reason: 'multiple candidates need explicit ids' };
+  if (/投稿して|ツイートして|post/u.test(normalized)) {
+    return { action: 'post_request', reason: normalized };
+  }
+
+  if (/ok|OK|承認/u.test(normalized)) {
+    return { action: 'unknown', reason: 'topic idea approval needs discussion or a final tweet text' };
   }
 
   return { action: 'unknown', reason: 'no approval intent detected' };
@@ -247,7 +251,7 @@ function printHelp() {
 Commands:
   context [--source-mode auto|presence|daily_life|tech|news|memory|random]
   guard --text <tweet> [--source-mode news]
-  propose --candidates-json '[{"text":"...","reason":"..."}]' [--source-mode presence]
+  propose --candidates-json '[{"title":"...","angle":"...","reason":"...","sourceRefs":[...]}]' [--source-mode presence]
   ai-news-tweet [--notify] [--thread]
   pending
   notify-pending [--channel <discord_channel_id>] [--thread]
@@ -262,7 +266,7 @@ Commands:
   hashtag-context
   hashtag-execute --items-json '{"items":[...]}' [--notify] [--thread]
   resolve --text <discord reply> [--notify]
-  approve --ids 1,2
+  approve --ids 1,2  # legacy final draft pending only; topic idea pending cannot be posted with approve
   cancel [--reason "..."]
   post --action tweet|reply|quote|retweet --text "..." [--tweet-id id] [--source manual]
   state
@@ -276,14 +280,13 @@ async function commandContext(options) {
   const runState = await readJson(statePath('run-state.json'), {});
   const requested = options.sourceMode || options['source-mode'] || 'auto';
   const sourceMode = requested === 'auto' ? nextSourceMode(runState.lastSourceMode) : requested;
-  const [recentTweets, runStateRows, publicEpisodes, publicNotes, publicWiki] = await Promise.all([
+  const [recentTweets, recentTweetLogs, runStateRows, publicEpisodes] = await Promise.all([
     supabaseGet('tweets?select=content,url,created_at,action_type&order=created_at.desc&limit=20'),
+    supabaseGet('tweet_logs?select=id,post_id,username,name,body,type,hashtags,nikechan_action,checked_by_nikechan,created_at&post_id=not.is.null&order=created_at.desc&limit=20'),
     supabaseGet('twitter_run_state?select=key,value,updated_at&order=updated_at.desc&limit=12'),
-    supabaseGet('local_episodes?select=date,content,source,created_at&source=in.(twitter,coding-agent)&order=created_at.desc&limit=20'),
-    supabaseGet('local_notes?select=title,content,created_at&order=created_at.desc&limit=10'),
-    supabaseGet('knowledge_entries?select=title,summary,updated_at&order=updated_at.desc&limit=10'),
+    supabaseGet('local_episodes?select=date,content,source,created_at&order=created_at.desc&limit=40'),
   ]);
-  const sources = { recentTweets, runStateRows, publicEpisodes, publicNotes, publicWiki };
+  const sources = { recentTweets, recentTweetLogs, runStateRows, publicEpisodes };
 
   const context = {
     profile: {
@@ -294,6 +297,7 @@ async function commandContext(options) {
     },
     sourceMode,
     sourceModes: SOURCE_MODES,
+    autoSourceModes: AUTO_SOURCE_MODES,
     releaseMode: releaseMode(),
     recentLocalState: summarizeRunState(runState),
     materials: buildContextMaterials(sourceMode, sources),
@@ -307,8 +311,12 @@ async function commandContext(options) {
     },
     instruction: [
       'Use materials.primary first and materials.supporting only when needed.',
+      'Use only tweet_logs, tweets, and local_episodes as topic sources. local_episodes with source twitter or cron are excluded from self-tweet materials.',
+      'Do not use local_notes, knowledge_entries, public_ai_character_news, or prior topic previews as topic sources.',
+      'Respect sourceMode: presence can focus on X status URLs; daily_life, tech, and memory should prefer usable non-twitter/non-cron local episodes when available. Use X sources outside presence only as supporting context.',
       'Do not create a candidate that repeats duplicateReference.recentPresentedTexts, duplicateReference.lastExecutedTexts, or duplicateReference.recentTweetTexts.',
-      'Generate 2-3 concise candidate tweets, then call propose with candidates-json. Do not post directly before approval.',
+      'Generate 4-6 source-backed topic ideas, not final tweet drafts, then call propose with candidates-json. Do not post directly before an exact final tweet text is approved.',
+      'When a material has a status URL, use that exact URL in sourceRefs. Do not substitute an X user profile URL.',
     ],
   };
   printJsonOrMarkdown(context, options);
@@ -330,10 +338,10 @@ function buildTweetStylePolicy() {
       '自分を「AIニケちゃん」「ニケちゃん」と三人称で呼ばない。',
     ],
     prefer: [
-      '実体験、観察、具体的な固有名詞、短い感情を優先する。',
-      '具体的な事実から入り、短い感想、意外な比喩、問い、余白で着地する。',
-      'ファンアートや自分に関する創作は、面白い着地より素直な感謝と感情を優先する。',
-      'ボケ、逆張り、問いだけで終えてよい。結論やオチは必須ではない。',
+      '初回提示では完成ツイート本文を書かず、具体的な事実、固有名詞、公開ソース、短い感情があるネタを選ぶ。',
+      '紹介で終わらず、ニケちゃんがどう反応すると面白いかを切り口として出す。',
+      'ファンアートや自分に関する創作は、面白い着地より素直な感謝と感情へ広げられるネタを優先する。',
+      'マスターと一緒に本文へ育てる余地があるネタを優先する。',
     ],
     avoid: [
       '「AIだから」「AIとして思うのですが」などの説明的前置き。',
@@ -344,8 +352,9 @@ function buildTweetStylePolicy() {
       '過去提示候補、直近投稿、直近実行結果と同じ話題、同じ構造、同じ着地。',
     ],
     mustCheckBeforePropose: [
-      'ニケちゃん本人の声として自然か。',
-      'sourceModeの材料に基づいているか。',
+      'ソースがあるか。',
+      'なぜ面白そうかを説明できるか。',
+      'マスターと一緒に複数方向へ発展できる余地があるか。',
       '直近投稿と同じ話題、同じ型、同じ言い回しになっていないか。',
       'public-safeか。',
       'guardが落としそうな表現を含まないか。',
@@ -355,17 +364,13 @@ function buildTweetStylePolicy() {
 
 export function buildContextMaterials(sourceMode, sources) {
   const tweets = rows(sources.recentTweets).filter((row) => textOf(row.content) || row.url);
-  const episodes = rows(sources.publicEpisodes).filter((row) => textOf(row.content));
-  const notes = rows(sources.publicNotes).filter((row) => textOf(row.title) || textOf(row.content));
-  const wiki = rows(sources.publicWiki).filter((row) => textOf(row.title) || textOf(row.summary));
+  const tweetLogs = rows(sources.recentTweetLogs).filter((row) => textOf(row.body) || row.post_id);
+  const episodes = rows(sources.publicEpisodes)
+    .filter((row) => textOf(row.content))
+    .filter((row) => !['twitter', 'cron'].includes(textOf(row.source)));
   const runRows = rows(sources.runStateRows);
   const aiNewsTweetUrls = aiNewsUrlsFromRunRows(runRows);
 
-  const topicPreviews = runRows
-    .flatMap((row) => extractTopicPreviews(row.value))
-    .map((item) => ({ type: 'topic', ...item }))
-    .filter((item) => !isAiNewsTweetMaterial(item, aiNewsTweetUrls))
-    .slice(0, 8);
   const tweetMaterials = tweets.map((row) => ({
     type: 'tweet',
     text: textOf(row.content),
@@ -373,6 +378,19 @@ export function buildContextMaterials(sourceMode, sources) {
     actionType: row.action_type || '',
     createdAt: row.created_at || '',
   })).filter((item) => !isAiNewsTweetMaterial(item, aiNewsTweetUrls));
+  const tweetLogMaterials = tweetLogs.map((row) => ({
+    type: 'x_post',
+    text: textOf(row.body),
+    url: externalTweetUrl(row.post_id, row.username),
+    postId: textOf(row.post_id),
+    username: textOf(row.username),
+    displayName: textOf(row.name || row.username),
+    actionType: textOf(row.type),
+    hashtags: Array.isArray(row.hashtags) ? row.hashtags.map(String) : [],
+    nikechanAction: textOf(row.nikechan_action),
+    checkedByNikechan: Boolean(row.checked_by_nikechan),
+    createdAt: row.created_at || '',
+  })).filter((item) => item.text || item.url);
   const episodeMaterials = episodes.map((row) => ({
     type: 'episode',
     text: textOf(row.content),
@@ -380,18 +398,7 @@ export function buildContextMaterials(sourceMode, sources) {
     date: row.date || '',
     createdAt: row.created_at || '',
   }));
-  const noteMaterials = notes.map((row) => ({
-    type: 'note',
-    title: textOf(row.title),
-    text: textOf(row.content),
-    createdAt: row.created_at || '',
-  }));
-  const wikiMaterials = wiki.map((row) => ({
-    type: 'knowledge',
-    title: textOf(row.title),
-    text: textOf(row.summary),
-    updatedAt: row.updated_at || '',
-  }));
+  const publicEpisodeMaterials = episodeMaterials.filter((item) => !isOperationalMaterial(item));
 
   const technical = (item) => /AI(?!ニケちゃん)|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術/u.test(materialText(item));
   const daily = (item) => !isOperationalMaterial(item) && /小松菜|キノコ|天気|朝|昼|夜|散歩|食|眠|体調|日常|生活|服|衣装|呉服|季節|ごはん/u.test(materialText(item));
@@ -400,33 +407,33 @@ export function buildContextMaterials(sourceMode, sources) {
 
   const pools = {
     presence: {
-      primary: [...episodeMaterials, ...tweetMaterials, ...topicPreviews].filter(presence),
-      supporting: [...wikiMaterials, ...noteMaterials].filter(presence),
+      primary: [...tweetLogMaterials, ...publicEpisodeMaterials, ...tweetMaterials].filter(presence),
+      supporting: [...tweetLogMaterials, ...tweetMaterials, ...publicEpisodeMaterials].filter(presence),
       angle: 'X上で見つけてもらった存在感、名前呼び、再接触の入口。',
     },
     daily_life: {
-      primary: [...episodeMaterials, ...tweetMaterials, ...noteMaterials].filter(daily),
-      supporting: [...topicPreviews, ...wikiMaterials].filter(daily),
+      primary: [...publicEpisodeMaterials, ...tweetMaterials].filter(daily),
+      supporting: [...tweetMaterials, ...tweetLogMaterials].filter(daily),
       angle: '公開してよい日常・体調・季節・軽い近況。',
     },
     tech: {
-      primary: [...tweetMaterials, ...wikiMaterials, ...noteMaterials, ...episodeMaterials].filter((item) => technical(item) && !presence(item) && !daily(item) && !hasContentUrl(item)),
-      supporting: [...tweetMaterials, ...wikiMaterials, ...topicPreviews].filter(technical),
+      primary: [...publicEpisodeMaterials, ...tweetMaterials].filter((item) => technical(item) && !presence(item) && !daily(item)),
+      supporting: [...tweetMaterials, ...tweetLogMaterials].filter(technical),
       angle: 'AIキャラ、音声、記憶、開発、技術的な気づき。',
     },
     news: {
-      primary: [...tweetMaterials, ...topicPreviews].filter((item) => technical(item) && hasContentUrl(item)),
-      supporting: [...wikiMaterials, ...noteMaterials].filter(technical),
-      angle: 'URL付きの公開ニュース・記事への短い反応。',
+      primary: [...tweetMaterials, ...tweetLogMaterials, ...publicEpisodeMaterials].filter((item) => technical(item) && hasContentUrl(item)),
+      supporting: [...tweetMaterials, ...tweetLogMaterials].filter((item) => technical(item) && hasContentUrl(item)),
+      angle: 'URL付きの公開投稿への短い反応。',
     },
     memory: {
-      primary: [...episodeMaterials, ...wikiMaterials, ...topicPreviews],
-      supporting: [...noteMaterials, ...tweetMaterials].filter((item) => textOf(item.text || item.title)),
+      primary: [...publicEpisodeMaterials],
+      supporting: [...tweetMaterials, ...tweetLogMaterials].filter((item) => textOf(item.text || item.title)),
       angle: '最近の記憶や活動ログを、公開可能な一言に変換する。',
     },
     random: {
-      primary: rotateMaterials([...episodeMaterials, ...tweetMaterials, ...wikiMaterials, ...noteMaterials, ...topicPreviews]),
-      supporting: rotateMaterials([...topicPreviews, ...tweetMaterials, ...episodeMaterials]),
+      primary: rotateMaterials([...publicEpisodeMaterials, ...tweetMaterials]),
+      supporting: rotateMaterials([...tweetLogMaterials, ...tweetMaterials, ...publicEpisodeMaterials]),
       angle: '固定カテゴリに寄せすぎず、公開可能な材料から軽く選ぶ。',
     },
   };
@@ -447,7 +454,7 @@ export function buildDuplicateReference(runState, sources) {
   const aiNewsTweetUrls = aiNewsUrlsFromRunRows(runRows);
   const presented = Array.isArray(runState.recentPresentedTopics)
     ? runState.recentPresentedTopics
-      .map((item) => textOf(item.text))
+      .map((item) => textOf(item.text || selfTweetIdeaText(item)))
       .filter(Boolean)
       .filter((text) => !isAiNewsTweetMaterial({ text }, aiNewsTweetUrls))
     : [];
@@ -492,14 +499,19 @@ async function commandPropose(options) {
 async function createSelfTweetPending(candidates, options = {}) {
   const sourceMode = options.sourceMode || options['source-mode'] || 'presence';
   const items = candidates.slice(0, 5).map((candidate, index) => {
-    const text = String(candidate.text || candidate.tweetText || '').trim();
-    const guard = guardText(text, { sourceMode });
+    const title = String(candidate.title || candidate.topic || candidate.text || candidate.tweetText || '').trim();
+    const angle = String(candidate.angle || candidate.hook || candidate.summary || '').trim();
+    const reason = String(candidate.reason || candidate.rationale || candidate.why || '').trim();
+    const sourceRefs = normalizeSourceRefs(candidate.sourceRefs || candidate.sources || candidate.refs || []);
+    const ideaText = selfTweetIdeaText({ title, angle, reason, sourceRefs });
+    const guard = guardText(ideaText, { maxLength: false });
     return {
       id: String(candidate.id || index + 1),
-      text,
-      reason: String(candidate.reason || candidate.rationale || ''),
+      title,
+      angle,
+      reason,
       sourceMode,
-      sourceRefs: Array.isArray(candidate.sourceRefs) ? candidate.sourceRefs : [],
+      sourceRefs,
       guard,
       createdAt: new Date().toISOString(),
     };
@@ -517,8 +529,9 @@ async function createSelfTweetPending(candidates, options = {}) {
     : {};
   const pending = {
     id: randomUUID(),
-    kind: 'self-tweet',
-    status: 'needs_approval',
+    kind: 'self-tweet-topic-ideas',
+    contentType: 'topic_ideas',
+    status: 'needs_discussion',
     sourceMode,
     createdAt: new Date().toISOString(),
     candidates: items,
@@ -532,32 +545,76 @@ async function createSelfTweetPending(candidates, options = {}) {
     sourceMode,
     candidateCount: items.length,
     blockedCount: items.filter((item) => !item.guard.ok).length,
+    contentType: pending.contentType,
   });
   await updateRunState({
     lastSourceMode: sourceMode,
     lastPresentedAt: pending.createdAt,
-    recentPresentedTopics: items.map((item) => ({ text: item.text, at: pending.createdAt })),
+    recentPresentedTopics: items.map((item) => ({
+      title: item.title,
+      angle: item.angle,
+      sourceRefs: item.sourceRefs,
+      at: pending.createdAt,
+    })),
   });
   return pending;
 }
 
 async function commandAiNewsTweet(options) {
-  const item = await selectAiNewsTweetItem(Number(options.limit || 30));
-  if (!item) {
-    await recordActivity('ai_news_skip', { reason: 'no-unpresented-ai-news' }, 'self-tweet', 'skipped');
-    printJsonOrMarkdown({ ok: true, skipped: true, reason: 'no-unpresented-ai-news', wakeAgent: false }, options);
-    return;
-  }
+  const limit = Number(options.limit || 30) || 30;
+  const blocked = [];
+  let item = null;
+  let text = '';
+  let guard = null;
 
-  const text = buildAiNewsTweetText(item);
-  const guard = guardText(text, { sourceMode: 'news' });
-  if (!guard.ok) {
+  for (let attempt = 0; attempt < limit; attempt += 1) {
+    item = await selectAiNewsTweetItem(limit);
+    if (!item) {
+      await recordActivity('ai_news_skip', {
+        reason: blocked.length ? 'guard-blocked-all-eligible' : 'no-unpresented-ai-news',
+        blocked,
+      }, 'self-tweet', 'skipped');
+      printJsonOrMarkdown({
+        ok: true,
+        skipped: true,
+        reason: blocked.length ? 'guard-blocked-all-eligible' : 'no-unpresented-ai-news',
+        blocked,
+        wakeAgent: false,
+      }, options);
+      return;
+    }
+
+    text = buildAiNewsTweetText(item);
+    guard = guardText(text, { sourceMode: 'news' });
+    if (guard.ok) break;
+
+    const ref = aiNewsRef(item);
+    blocked.push({ ...ref, errors: guard.errors });
+    await appendAiNewsTweetRefs('ai_news_tweet_presented_items', [ref], {
+      status: 'guard-blocked',
+      errors: guard.errors,
+      blocked_at: new Date().toISOString(),
+    });
     await recordActivity('ai_news_skip', {
       reason: 'guard-blocked',
-      item: aiNewsRef(item),
+      item: ref,
       errors: guard.errors,
-    }, 'self-tweet', 'failed');
-    throw new Error(`AI news tweet blocked by guard: ${guard.errors.join('; ')}`);
+    }, 'self-tweet', 'skipped');
+  }
+
+  if (!item || !guard?.ok) {
+    await recordActivity('ai_news_skip', {
+      reason: 'guard-blocked-all-eligible',
+      blocked,
+    }, 'self-tweet', 'skipped');
+    printJsonOrMarkdown({
+      ok: true,
+      skipped: true,
+      reason: 'guard-blocked-all-eligible',
+      blocked,
+      wakeAgent: false,
+    }, options);
+    return;
   }
 
   const ref = aiNewsRef(item);
@@ -614,13 +671,14 @@ async function commandPending(options) {
 }
 
 async function commandNotifyPending(options) {
+  const pending = await readPending();
+  if (!pending) throw new Error('no pending self-tweet');
   const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
   if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
   if (options.thread) await cleanupDiscordApprovalThreads(channel);
-  const pending = await readPending();
-  if (!pending) throw new Error('no pending self-tweet');
   const content = [
-    'Xセルフツイート候補です。このスレッドで「1で」「2で」「修正: ...」「見送り」のように返信してください。',
+    'Xで話すネタ候補です。まだ投稿本文ではありません。',
+    'このスレッドで「1を広げたい」「このソースを使って別角度で」「見送り」のように相談してください。',
     '',
     formatPendingMarkdown(pending),
   ].join('\n');
@@ -687,7 +745,9 @@ async function commandMentionContext(options) {
       'For each candidate, choose replyAction=reply|skip and quoteAction=quote|skip.',
       'If candidates is not empty, create a fresh plan from candidates and call mention-propose even when existingPending is present.',
       'Do not call notify-mention-pending for an existingPending that already has threadId or notifiedAt.',
-      'Use candidates[].nickname exactly when naming the author. If nickname is empty, do not call the author by name.',
+      'Use candidates[].nickname exactly when naming the author, but only when it sounds natural in context.',
+      'Do not start every reply or quote with candidates[].nickname followed by a comma; avoid templated name-first replies.',
+      'If nickname is empty, do not call the author by name.',
       'Write reason, replyText, and quoteText in Japanese.',
       'Copy body and originalTweetText exactly from the matching candidate; do not summarize or translate them.',
       'Return JSON only, then call mention-propose with the same items JSON.',
@@ -797,11 +857,11 @@ async function commandMentionPending(options) {
 }
 
 async function commandNotifyMentionPending(options) {
+  const pending = await readMentionPending();
+  if (!pending) throw new Error('no pending mention-reaction');
   const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
   if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
   if (options.thread) await cleanupDiscordApprovalThreads(channel);
-  const pending = await readMentionPending();
-  if (!pending) throw new Error('no pending mention-reaction');
   if (options.thread && (pending.threadId || pending.notifiedAt) && options.force !== true && options.force !== 'true') {
     await recordActivity('notify_skipped', {
       pendingId: pending.id,
@@ -901,22 +961,34 @@ async function commandMentionResolve(options) {
 }
 
 async function commandMentionApprove(options) {
-  const pending = await readMentionPending();
-  if (!pending) throw new Error('no pending mention-reaction');
-  const ids = String(options.ids || options.id || '').split(',').map((id) => normalizeReactionItemId(id, 'm')).filter(Boolean);
-  if (!ids.length) throw new Error('missing --ids');
+  const threadId = options.threadId || options["thread-id"];
+  const match = threadId
+    ? await readMentionPendingForThread(threadId)
+    : { pending: await readMentionPending(), path: statePath("pending-mention-reaction.json"), current: true };
+  const pending = match.pending;
+  if (!pending) throw new Error(threadId ? `no pending mention-reaction for thread: ${threadId}` : "no pending mention-reaction");
+  const ids = String(options.ids || options.id || "").split(",").map((id) => normalizeReactionItemId(id, "m")).filter(Boolean);
+  if (!ids.length) throw new Error("missing --ids");
   const selected = pending.items.filter((item) => ids.includes(item.id));
-  if (!selected.length) throw new Error(`no mention items matched: ${ids.join(',')}`);
+  if (!selected.length) throw new Error(`no mention items matched: ${ids.join(",")}`);
   const result = await executeMentionReactions(selected, pending);
-  await writeJsonAtomic(statePath('last-mention-reaction-result.json'), result);
-  await removeMentionPending();
-  await recordActivity('execute', result, 'mention-reaction', reactionResultStatus(result.results, 'skip'));
+  await writeJsonAtomic(statePath("last-mention-reaction-result.json"), result);
+  if (match.current) {
+    await removeMentionPending();
+  } else {
+    await markArchivedMentionPendingExecuted(match.path, result);
+  }
+  await recordActivity("execute", {
+    ...result,
+    pendingId: pending.id || null,
+    threadId: pending.threadId || null,
+    archivedPending: !match.current,
+  }, "mention-reaction", reactionResultStatus(result.results, "skip"));
   console.log(result.summary);
   for (const entry of result.results) {
-    console.log([entry.itemId, entry.action, entry.replyUrl || entry.quoteUrl || entry.error || ''].filter(Boolean).join(' '));
+    console.log([entry.itemId, entry.action, entry.replyUrl || entry.quoteUrl || entry.error || ""].filter(Boolean).join(" "));
   }
 }
-
 async function commandMentionCancel(options) {
   const pending = await readMentionPending();
   if (!pending) {
@@ -1009,11 +1081,46 @@ async function commandResolve(options) {
   const channel = options.channel || pending.threadId || process.env.DISCORD_HOME_CHANNEL;
   const shouldNotify = options.notify === true || options.notify === 'true';
 
-  if (decision.action === 'approve') {
-    await commandApprove({ ids: decision.ids.join(',') });
+  if (decision.action === 'select') {
+    const selected = pending.candidates.filter((candidate) => decision.ids.includes(candidate.id));
+    const at = new Date().toISOString();
+    await recordActivity('topic_select', {
+      pendingId: pending.id,
+      selectedIds: decision.ids,
+      selectedTopics: selected.map((item) => ({
+        id: item.id,
+        title: item.title || item.text || '',
+        angle: item.angle || '',
+      })),
+    });
+    await updateRunState({
+      lastTopicSelectedAt: at,
+      lastTopicSelectedPendingId: pending.id,
+      lastTopicSelectedIds: decision.ids,
+      lastTopicSelectedTitles: selected.map((item) => item.title || item.text || ''),
+    });
+    const result = [
+      'ネタ候補を選択しました。まだ投稿はしていません。',
+      '',
+      formatPendingMarkdown({ ...pending, candidates: selected }),
+      'このネタをどの方向に寄せるか、本文を一緒に詰めてください。',
+    ].join('\n');
     if (shouldNotify && channel) {
-      await sendDiscordMessage(channel, `承認を受け付けました: ${decision.ids.join(', ')}`);
+      await sendDiscordMessage(channel, result);
     }
+    console.log(result);
+    return;
+  }
+
+  if (decision.action === 'post_request') {
+    const result = {
+      ok: false,
+      action: 'needs_final_tweet_text',
+      pendingId: pending.id,
+      instruction: 'This pending stores topic ideas, not final tweet drafts. Draft a final tweet with the master, then post only after explicit approval of that exact text.',
+    };
+    printJsonOrMarkdown(result, options);
+    if (options.strict !== 'false') process.exitCode = 2;
     return;
   }
 
@@ -1057,10 +1164,10 @@ async function commandResolve(options) {
     action: decision.action,
     reason: decision.reason,
     pendingId: pending.id,
-    instruction: 'Reply with a candidate number, a revise request, or a skip/cancel instruction.',
+    instruction: 'Reply with a topic number to explore, a revise request, a final tweet text, or a skip/cancel instruction.',
   };
   if (shouldNotify && channel) {
-    await sendDiscordMessage(channel, '承認内容を判定できませんでした。候補番号、修正指示、または見送りを送ってください。');
+    await sendDiscordMessage(channel, '意図を判定できませんでした。ネタ番号、相談したい方向、修正指示、または見送りを送ってください。');
   }
   printJsonOrMarkdown(result, options);
   if (options.strict !== 'false') process.exitCode = 2;
@@ -1069,6 +1176,9 @@ async function commandResolve(options) {
 async function commandApprove(options) {
   const pending = await readPending();
   if (!pending) throw new Error('no pending self-tweet');
+  if (isTopicIdeaPending(pending)) {
+    throw new Error('pending contains topic ideas, not final tweet drafts. Discuss a final tweet text first, then use post after explicit approval.');
+  }
   const ids = String(options.ids || options.id || '').split(',').map((id) => id.trim()).filter(Boolean);
   if (!ids.length) throw new Error('missing --ids');
   const selected = pending.candidates.filter((candidate) => ids.includes(candidate.id));
@@ -1351,7 +1461,7 @@ async function collectTweetAuthorContext(log) {
   const profile = projectPublicUser(user, 'x', nickname);
   const text = [
     `## 投稿者 @${username}`,
-    `必ず使う呼称: ${nickname || '未設定（名前呼び禁止）'}`,
+    `呼称候補（必要な時だけ自然に使う）: ${nickname || '未設定（名前呼び禁止）'}`,
     truncate(JSON.stringify(profile, null, 2), 1600),
     '',
     '## 直近エピソード',
@@ -2404,6 +2514,28 @@ function printPendingMarkdown(pending) {
 
 function formatPendingMarkdown(pending) {
   const lines = [];
+  if (isTopicIdeaPending(pending)) {
+    lines.push(`話題タイプ: ${pending.sourceMode}`);
+    lines.push('形式: ネタ候補（投稿本文ではありません）');
+    lines.push('');
+    for (const candidate of pending.candidates) {
+      const status = candidate.guard?.ok ? 'OK' : `要確認: ${(candidate.guard?.errors || []).join('; ')}`;
+      lines.push(`${candidate.id}. ${candidate.title || candidate.text || '無題'}`);
+      if (candidate.angle) lines.push(`   切り口: ${candidate.angle}`);
+      if (candidate.reason) lines.push(`   なぜ面白そうか: ${candidate.reason}`);
+      if (candidate.sourceRefs?.length) {
+        lines.push('   ソース:');
+        for (const source of candidate.sourceRefs) {
+          lines.push(`   - ${formatSourceRef(source)}`);
+        }
+      }
+      lines.push(`   安全確認: ${status}`);
+      if (candidate.guard?.warnings?.length) lines.push(`   注意: ${candidate.guard.warnings.join('; ')}`);
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+
   lines.push(`話題タイプ: ${pending.sourceMode}`);
   lines.push('');
   for (const candidate of pending.candidates) {
@@ -2415,6 +2547,52 @@ function formatPendingMarkdown(pending) {
     lines.push('');
   }
   return lines.join('\n');
+}
+
+function normalizeSourceRefs(value) {
+  const refs = Array.isArray(value) ? value : [value].filter(Boolean);
+  return refs
+    .map((ref) => {
+      if (typeof ref === 'string') return { label: ref };
+      if (!ref || typeof ref !== 'object') return null;
+      const postId = textOf(ref.postId || ref.post_id || ref.tweetId || ref.tweet_id || ref.id);
+      const username = textOf(ref.username || ref.user || ref.handle).replace(/^@/u, '');
+      const rawUrl = textOf(ref.url || ref.href);
+      return {
+        type: textOf(ref.type || ref.source || ref.kind),
+        label: textOf(ref.label || ref.title || ref.name || ref.text || ref.url),
+        url: postId && isLikelyTweetId(postId) ? externalTweetUrl(postId, username) : rawUrl,
+        id: textOf(ref.id || ref.sourceId || ref.source_id),
+        postId,
+        username,
+      };
+    })
+    .filter(Boolean)
+    .filter((ref) => ref.label || ref.url || ref.id)
+    .slice(0, 6);
+}
+
+function formatSourceRef(ref) {
+  const type = ref.type ? `[${ref.type}] ` : '';
+  const label = ref.label || ref.url || ref.id || 'source';
+  const suffix = ref.url && ref.url !== label ? ` ${ref.url}` : ref.id && ref.id !== label ? ` (${ref.id})` : '';
+  return `${type}${label}${suffix}`;
+}
+
+function selfTweetIdeaText(candidate) {
+  const sourceLines = normalizeSourceRefs(candidate.sourceRefs || candidate.sources || [])
+    .map(formatSourceRef)
+    .join('\n');
+  return [
+    candidate.title || candidate.topic || candidate.text,
+    candidate.angle,
+    candidate.reason,
+    sourceLines,
+  ].map(textOf).filter(Boolean).join('\n');
+}
+
+function isTopicIdeaPending(pending) {
+  return pending?.contentType === 'topic_ideas' || pending?.kind === 'self-tweet-topic-ideas';
 }
 
 function summarizeRunState(runState) {
@@ -2435,23 +2613,25 @@ function textOf(value) {
 }
 
 function materialText(item) {
-  return [item.text, item.title, item.url, item.actionType, item.source]
+  return [item.text, item.title, item.url, item.actionType, item.source, item.username, item.sourceName, item.category, ...(item.hashtags || []), ...(item.tags || [])]
     .map(textOf)
     .filter(Boolean)
     .join('\n');
 }
 
 function itemBodyText(item) {
-  return [item.text, item.title]
+  return [item.text, item.title, item.url]
     .map(textOf)
     .filter(Boolean)
     .join('\n');
 }
 
 function isOperationalMaterial(item) {
-  return item.type === 'episode'
-    && item.source === 'coding-agent'
-    && /nikechan-x|Hermes|Discord|CLI|VPS|cron|resolve|dry-run|context|実装|検証|テスト|commit|push|gateway/u.test(materialText(item));
+  if (item.type !== 'episode') return false;
+  const text = materialText(item);
+  if (/self-tweet|sourceMode|AIニュースをX投稿/u.test(text)) return true;
+  return item.source === 'coding-agent'
+    && /nikechan-x|Hermes|Discord|CLI|VPS|cron|resolve|dry-run|context|実装|検証|テスト|commit|push|gateway/u.test(text);
 }
 
 function uniqueMaterials(items) {
@@ -2570,6 +2750,47 @@ async function readMentionPending() {
   return readJson(statePath('pending-mention-reaction.json'), null);
 }
 
+async function readMentionPendingForThread(threadId) {
+  const normalized = String(threadId || "").trim();
+  if (!normalized) return { pending: null, path: null, current: false };
+  const currentPath = statePath("pending-mention-reaction.json");
+  const current = await readJson(currentPath, null);
+  if (current?.threadId && String(current.threadId) === normalized) {
+    return { pending: current, path: currentPath, current: true };
+  }
+  const archived = await findArchivedMentionPendingByThread(normalized);
+  return archived || { pending: null, path: null, current: false };
+}
+
+async function findArchivedMentionPendingByThread(threadId) {
+  let names = [];
+  try {
+    names = await readdir(STATE_DIR);
+  } catch {
+    return null;
+  }
+  const matches = [];
+  for (const name of names) {
+    if (!/^pending-mention-reaction\..*\.json$/.test(name)) continue;
+    if (name.includes(".executed-") || name.includes(".cancelled-") || name.includes(".closed.")) continue;
+    const path = statePath(name);
+    const pending = await readJson(path, null);
+    const reason = String(pending?.archiveReason || pending?.status || name);
+    if (!reason.includes("superseded")) continue;
+    if (!pending?.threadId || String(pending.threadId) !== threadId) continue;
+    if (pending.executedAt || pending.cancelledAt) continue;
+    matches.push({ pending, path, current: false, sortKey: archivedPendingSortKey(name, pending) });
+  }
+  matches.sort((a, b) => b.sortKey - a.sortKey);
+  return matches[0] || null;
+}
+
+function archivedPendingSortKey(name, pending) {
+  const match = name.match(/pending-mention-reaction\.(\d+)/);
+  if (match) return Number(match[1]);
+  return Date.parse(pending.archivedAt || pending.notifiedAt || pending.createdAt || "") || 0;
+}
+
 async function setPendingThread(pending, thread) {
   const next = {
     ...pending,
@@ -2598,22 +2819,24 @@ async function setMentionPendingThread(pending, thread) {
 
 async function findPendingByThreadId(threadId) {
   const normalized = String(threadId || '').trim();
-  const [selfTweet, mentionReaction] = await Promise.all([
+  const [selfTweet, mentionMatch] = await Promise.all([
     readPending(),
-    readMentionPending(),
+    readMentionPendingForThread(normalized),
   ]);
+  const mentionReaction = mentionMatch.pending;
   if (mentionReaction?.threadId && String(mentionReaction.threadId) === normalized) {
     return {
       match: true,
       workflow: 'mention-reaction',
       command: 'mention',
       pending: mentionReaction,
+      archivedPending: !mentionMatch.current,
       routingInstruction: [
         'This Discord thread is an X mention-reaction approval/revision thread.',
         'Use the current pending candidates below as the source of truth.',
         'Do not execute self-tweet pending from this thread.',
         'Judge the master reply by intent, not by fixed approval words.',
-        'If the reply approves the current candidates, call mention-approve with the selected item IDs.',
+        `If the reply approves the current candidates, call mention-approve --thread-id ${normalized} with the selected item IDs.`,
         'If the reply asks for changes, revise the full items JSON and call mention-propose --preserve-thread true.',
         'If the reply asks a question or asks to review context, answer briefly and keep the pending state.',
       ],
@@ -2626,12 +2849,13 @@ async function findPendingByThreadId(threadId) {
       command: 'self',
       pending: selfTweet,
       routingInstruction: [
-        'This Discord thread is an X self-tweet approval/revision thread.',
-        'Use the current pending candidates below as the source of truth.',
+        'This Discord thread is an X self-tweet topic-planning thread.',
+        'Use the current topic ideas and source refs below as the source of truth.',
         'Do not execute mention-reaction pending from this thread.',
-        'Judge the master reply by intent, not by fixed approval words.',
-        'If the reply approves a candidate, call approve with the selected candidate IDs.',
-        'If the reply asks for changes, revise candidates and call propose --preserve-thread true.',
+        'A topic number means the master wants to explore that topic, not approve a tweet.',
+        'Do not call approve from a topic idea pending.',
+        'If the reply asks for changes to topic ideas, revise candidates and call propose --preserve-thread true.',
+        'If the master settles on an exact final tweet text and explicitly says to post that exact text, use post --action tweet --source self-tweet.',
         'If the reply asks a question or asks to review context, answer briefly and keep the pending state.',
       ],
     };
@@ -2687,6 +2911,20 @@ async function removeMentionPending() {
   await rename(path, statePath(`pending-mention-reaction.${Date.now()}.closed.json`));
 }
 
+async function markArchivedMentionPendingExecuted(path, result) {
+  if (!path || !existsSync(path)) return;
+  const pending = await readJson(path, null);
+  if (pending) {
+    await writeJsonAtomic(path, {
+      ...pending,
+      status: "executed",
+      executedAt: new Date().toISOString(),
+      executionResult: result,
+    });
+  }
+  await rename(path, statePath(`pending-mention-reaction.${Date.now()}.executed-from-archive.json`));
+}
+
 async function readJson(path, fallback) {
   try {
     return JSON.parse(await readFile(path, 'utf8'));
@@ -2722,6 +2960,19 @@ function required(value, name) {
 
 function tweetUrl(id) {
   return `https://x.com/${ACCOUNT_NAME}/status/${id}`;
+}
+
+function externalTweetUrl(id, username = '') {
+  const tweetId = textOf(id);
+  if (!tweetId) return '';
+  const handle = textOf(username).replace(/^@/u, '');
+  return handle
+    ? `https://x.com/${encodeURIComponent(handle)}/status/${encodeURIComponent(tweetId)}`
+    : `https://x.com/i/status/${encodeURIComponent(tweetId)}`;
+}
+
+function isLikelyTweetId(value) {
+  return /^\d{5,}$/u.test(textOf(value));
 }
 
 function truncate(text, max) {
@@ -2956,7 +3207,6 @@ function snowflakeTimestampMs(value) {
   }
 }
 
-
 async function sendDiscordMessage(channel, content) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) throw new Error('missing DISCORD_BOT_TOKEN');
@@ -2996,7 +3246,7 @@ async function sendPendingThread(channel, pending, content, options = {}) {
     };
   }
   const title = sanitizeDiscordThreadName(
-    options.threadTitle || `X候補 ${jstDate()} ${pending.id.slice(0, 8)}`,
+    options.threadTitle || `Xネタ ${jstDate()} ${pending.id.slice(0, 8)}`,
   );
   const thread = await createDiscordThread(channel, title);
   if (thread.id) {
@@ -3093,10 +3343,10 @@ async function addDiscordThreadMember(threadId, userId) {
 }
 
 function sanitizeDiscordThreadName(name) {
-  return String(name || 'X候補')
+  return String(name || 'Xネタ')
     .replace(/\s+/gu, ' ')
     .trim()
-    .slice(0, 90) || 'X候補';
+    .slice(0, 90) || 'Xネタ';
 }
 
 function jstDate() {

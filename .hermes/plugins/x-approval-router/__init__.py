@@ -45,13 +45,49 @@ def _platform_value(value: Any) -> str:
 def _find_pending_for_thread(thread_id: str) -> dict[str, Any] | None:
     mention = _read_json(STATE_DIR / "pending-mention-reaction.json")
     if str(mention.get("threadId") or "") == thread_id:
-        return {"workflow": "mention-reaction", "pending": mention}
+        return {"workflow": "mention-reaction", "pending": mention, "archived": False}
+
+    archived_mention = _find_archived_mention_for_thread(thread_id)
+    if archived_mention:
+        return {"workflow": "mention-reaction", "pending": archived_mention, "archived": True}
 
     self_tweet = _read_json(STATE_DIR / "pending-self-tweet.json")
     if str(self_tweet.get("threadId") or "") == thread_id:
-        return {"workflow": "self-tweet", "pending": self_tweet}
+        return {"workflow": "self-tweet", "pending": self_tweet, "archived": False}
 
     return None
+
+
+def _find_archived_mention_for_thread(thread_id: str) -> dict[str, Any] | None:
+    matches: list[tuple[int, dict[str, Any]]] = []
+    for path in STATE_DIR.glob("pending-mention-reaction.*.json"):
+        name = path.name
+        if ".executed-" in name or ".cancelled-" in name or ".closed." in name:
+            continue
+        pending = _read_json(path)
+        reason = str(pending.get("archiveReason") or pending.get("status") or name)
+        if "superseded" not in reason:
+            continue
+        if str(pending.get("threadId") or "") != thread_id:
+            continue
+        if pending.get("executedAt") or pending.get("cancelledAt"):
+            continue
+        matches.append((_archived_sort_key(path, pending), pending))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return matches[0][1]
+
+
+def _archived_sort_key(path: Path, pending: dict[str, Any]) -> int:
+    parts = path.name.split(".")
+    if len(parts) > 1 and parts[1].isdigit():
+        return int(parts[1])
+    for key in ("archivedAt", "notifiedAt", "createdAt"):
+        value = str(pending.get(key) or "")
+        if value:
+            return int(path.stat().st_mtime * 1000)
+    return int(path.stat().st_mtime * 1000)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -67,7 +103,9 @@ def _build_rewrite_prompt(match: dict[str, Any], master_reply: str) -> str:
     pending_json = json.dumps(_compact_pending(workflow, pending), ensure_ascii=False, indent=2)
 
     if workflow == "mention-reaction":
-        instructions = """このDiscord threadはXメンション反応の承認・修正スレッドです。
+        thread_id = str(pending.get("threadId") or "").strip()
+        archived_note = "\n- この候補は後続候補で退避済みですが、このthreadの上の候補が正です。承認時は必ず --thread-id を付けてください。" if match.get("archived") else ""
+        instructions = f"""このDiscord threadはXメンション反応の承認・修正スレッドです。
 マスターの返信を、固定文言ではなく文脈上の意図で判断してください。
 
 判断方針:
@@ -75,8 +113,8 @@ def _build_rewrite_prompt(match: dict[str, Any], master_reply: str) -> str:
 - 番号や m1/m2 指定があれば該当候補だけ、指定がなければ現在提示中の実行対象を承認します。
 - 「ここをこう変えて」「もう少し柔らかく」「この文だけ直して」などは修正です。LLM判断で候補全文を作り直し、`node scripts/nikechan-x.mjs mention-propose --preserve-thread true --items-json '<json>'` を実行してください。
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持してください。
-- このthreadでは self-tweet pending を実行しないでください。
-- 承認時は `node scripts/nikechan-x.mjs mention-approve --ids ...` だけを実行し、結果を短く報告してください。
+- このthreadでは self-tweet pending を実行しないでください。{archived_note}
+- 承認時は `node scripts/nikechan-x.mjs mention-approve --thread-id {thread_id} --ids ...` だけを実行し、結果を短く報告してください。
 
 Discordへの返答スタイル:
 - マスターには内部コマンド、pending ID、`needs_approval`、JSON、実行ログを見せないでください。マスターが明示的にログ確認を求めた場合だけ最小限に出します。
@@ -84,21 +122,24 @@ Discordへの返答スタイル:
 - 承認・投稿した場合は投稿済みURLだけを簡潔に返してください。
 - 事務報告ではなく、Discord上の会話として自然な短文にしてください。"""
     else:
-        instructions = """このDiscord threadはXセルフツイートの承認・修正スレッドです。
+        instructions = """このDiscord threadはXセルフツイートのネタ相談スレッドです。
 マスターの返信を、固定文言ではなく文脈上の意図で判断してください。
 
 判断方針:
-- 「どうぞ」「お願い」「そのまま」「これで」「いいよ」など、現在候補を進める意図なら承認です。
-- 番号指定があれば該当候補だけ、指定がなければ文脈上もっとも自然な候補を承認します。
-- 「ここをこう変えて」「もっと短く」「語尾を変えて」などは修正です。LLM判断で候補を作り直し、`node scripts/nikechan-x.mjs propose --preserve-thread true --candidates-json '<json>'` を実行してください。
+- 現在pendingは投稿本文ではなく、ソース付きのネタ候補です。
+- 番号指定は「そのネタを広げたい」という意味で扱い、投稿承認として扱わないでください。
+- 「どうぞ」「お願い」「そのまま」「これで」「いいよ」だけでは投稿しません。最終本文が未確定なら、選ばれたネタの切り口を一緒に詰めてください。
+- 「このネタは違う」「別角度で」「ソースを変えて」などは修正です。LLM判断でネタ候補JSONを作り直し、`node scripts/nikechan-x.mjs propose --preserve-thread true --candidates-json '<json>'` を実行してください。
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持してください。
 - このthreadでは mention-reaction pending を実行しないでください。
-- 承認時は `node scripts/nikechan-x.mjs approve --ids ...` だけを実行し、結果を短く報告してください。
+- `node scripts/nikechan-x.mjs approve --ids ...` は使わないでください。
+- マスターと最終投稿本文まで合意し、その本文を明示的に「投稿して」と言われた場合だけ、`node scripts/nikechan-x.mjs post --action tweet --source self-tweet --text '...'` を実行してください。
 
 Discordへの返答スタイル:
 - マスターには内部コマンド、pending ID、`needs_approval`、JSON、実行ログを見せないでください。マスターが明示的にログ確認を求めた場合だけ最小限に出します。
-- 修正した場合は「了解しました。では雰囲気を変えて以下のような案でどうでしょう。」のように自然に返し、変更後の候補本文だけを見せてください。
-- 承認・投稿した場合は投稿済みURLだけを簡潔に返してください。
+- ネタを選ばれた場合は、なぜそのネタが使えそうか、どの切り口に寄せるか、本文に入れる/入れない要素を短く相談してください。
+- 修正した場合は、変更後のネタ候補をソース・理由つきで見せてください。
+- 投稿した場合だけ投稿済みURLを簡潔に返してください。
 - 事務報告ではなく、Discord上の会話として自然な短文にしてください。"""
 
     return f"""{instructions}
@@ -159,8 +200,11 @@ def _compact_pending(workflow: str, pending: dict[str, Any]) -> dict[str, Any]:
         base["candidates"] = [
             {
                 "id": item.get("id"),
+                "title": item.get("title"),
+                "angle": item.get("angle"),
                 "text": item.get("text"),
                 "reason": item.get("reason"),
+                "sourceRefs": item.get("sourceRefs"),
                 "sourceMode": item.get("sourceMode"),
                 "guard": item.get("guard"),
             }

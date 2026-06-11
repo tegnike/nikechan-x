@@ -24,7 +24,8 @@ node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
 - マスター承認なしに返信・引用RTを実行しない
 - 候補生成前に必ず `mention-context` を読む
 - `mention-context.candidates[].personContext` は公開可能な投影だけとして扱う
-- 相手を名前で呼ぶ場合は `nickname` だけをそのまま使う
+- 相手の呼称は、会話上自然な場合だけ `nickname` をそのまま使う
+- 返信・引用RTの冒頭を毎回 `nickname、` / `nicknameさん、` の形にしない。名前呼びは文中に自然に入る時だけ使う
 - `nickname` が空の場合は相手を名前で呼ばない
 - `body` と `originalTweetText` は `mention-context.candidates[]` の原文をそのまま使い、要約・翻訳しない
 - `reason` / `replyText` / `quoteText` は必ず日本語で書く

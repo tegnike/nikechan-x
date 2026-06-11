@@ -38,6 +38,7 @@ kanban.db
 __pycache__/
 *.pyc
 .DS_Store
+node_modules/
 
 # cron runtime state
 cron/jobs.json
@@ -78,6 +79,7 @@ profiles/*/logs/
 profiles/*/gateway/
 profiles/*/gateway.pid
 profiles/*/gateway.lock
+profiles/*/memories/*.lock
 profiles/*/gateway_state.json
 profiles/*/channel_directory.json
 profiles/*/context_length_cache.yaml
