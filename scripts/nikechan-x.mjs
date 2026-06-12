@@ -73,6 +73,12 @@ export function guardText(text, options = {}) {
     errors.push('suspicious Chinese-specific character detected');
   }
 
+  for (const [open, close] of [['「', '」'], ['『', '』'], ['“', '”'], ['‘', '’']]) {
+    const openCount = [...normalized].filter((char) => char === open).length;
+    const closeCount = [...normalized].filter((char) => char === close).length;
+    if (openCount !== closeCount) errors.push(`unbalanced quote marks: ${open}${close}`);
+  }
+
   const sourceMode = options.sourceMode || '';
   if (sourceMode === 'news' && /ニュース|記事|話題|リリース|発表|検索/u.test(normalized) && !/https?:\/\//u.test(normalized)) {
     errors.push('news/source hook without URL');
@@ -1880,12 +1886,27 @@ function guardMentionText(text, candidate) {
 }
 
 function sanitizeTweetText(text) {
-  return String(text || '')
-    .replace(/^["「]|["」]$/gu, '')
+  return stripWrappingQuote(String(text || '').trim())
     .replace(/\s+\n/gu, '\n')
     .replace(/\n{3,}/gu, '\n\n')
     .trim()
     .slice(0, 280);
+}
+
+function stripWrappingQuote(text) {
+  const quotePairs = [
+    ['"', '"'],
+    ['「', '」'],
+    ['『', '』'],
+    ['“', '”'],
+    ['‘', '’'],
+  ];
+  for (const [open, close] of quotePairs) {
+    if (text.startsWith(open) && text.endsWith(close) && text.length >= open.length + close.length) {
+      return text.slice(open.length, text.length - close.length).trim();
+    }
+  }
+  return text;
 }
 
 function fallbackNickname(displayName, username) {
