@@ -260,7 +260,7 @@
         "times": null,
         "completed": 0
       },
-      "enabled": true,
+      "enabled": false,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
