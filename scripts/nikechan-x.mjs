@@ -2319,8 +2319,9 @@ async function recordAiNewsTweetExecution(candidates, execution) {
 }
 
 async function selectAiNewsTweetItem(limit = 30) {
+  const recentSince = encodeURIComponent(new Date(Date.now() - AI_NEWS_TWEET_MAX_AGE_MS).toISOString());
   const [newsResult, presentedState, executedState] = await Promise.all([
-    supabaseGet(`public_ai_character_news?order=created_at.asc&limit=${Number(limit) || 30}&select=id,url,title,source_name,source_domain,published_at,discovered_at,summary,nike_comment,category,tags,created_at`),
+    supabaseGet(`public_ai_character_news?created_at=gte.${recentSince}&order=created_at.asc&limit=${Number(limit) || 30}&select=id,url,title,source_name,source_domain,published_at,discovered_at,summary,nike_comment,category,tags,created_at`),
     getTwitterRunStateValue('ai_news_tweet_presented_items'),
     getTwitterRunStateValue('ai_news_tweet_executed_items'),
   ]);
