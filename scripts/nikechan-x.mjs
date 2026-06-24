@@ -19,7 +19,7 @@ const X_URL_WEIGHT = 23;
 const DISCORD_THREAD_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DISCORD_THREAD_REGISTRY_PATH = resolve(ROOT, 'discord_threads.json');
 const DISCORD_THREAD_NAME_PREFIXES = ["X候補", "Xネタ", "Xメンション", "Xハッシュタグ", "AITuberニュース", "Xレポート"];
-const MENTION_REACTION_BLOCKED_HANDLES = new Set(['kirisaki_99']);
+const MENTION_REACTION_BLOCKED_HANDLES = new Set(['kirisaki_99', 'bl_fox26']);
 
 await loadDotenv(resolve(ROOT, '.env'));
 
