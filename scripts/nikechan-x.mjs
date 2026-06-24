@@ -19,6 +19,7 @@ const X_URL_WEIGHT = 23;
 const DISCORD_THREAD_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DISCORD_THREAD_REGISTRY_PATH = resolve(ROOT, 'discord_threads.json');
 const DISCORD_THREAD_NAME_PREFIXES = ["X候補", "Xネタ", "Xメンション", "Xハッシュタグ", "AITuberニュース", "Xレポート"];
+const MENTION_REACTION_BLOCKED_HANDLES = new Set(['kirisaki_99']);
 
 await loadDotenv(resolve(ROOT, '.env'));
 
@@ -1386,6 +1387,7 @@ async function collectMentionReactionCandidates() {
   ]);
   const logs = [...rows(rawReplies), ...rows(rawMentions)];
   const deduped = [...new Map(logs.map((log) => [String(log.post_id || log.id), log])).values()]
+    .filter((log) => !isBlockedMentionReactionAuthor(log))
     .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
     .slice(0, 10);
 
@@ -1413,6 +1415,14 @@ async function collectMentionReactionCandidates() {
     };
   }));
   return candidates.filter((candidate) => candidate.tweetLogId && candidate.postId);
+}
+
+function normalizeXHandle(value) {
+  return textOf(value).replace(/^@/u, '').toLowerCase();
+}
+
+function isBlockedMentionReactionAuthor(log) {
+  return MENTION_REACTION_BLOCKED_HANDLES.has(normalizeXHandle(log.username));
 }
 
 async function collectHashtagReactionCandidates() {
