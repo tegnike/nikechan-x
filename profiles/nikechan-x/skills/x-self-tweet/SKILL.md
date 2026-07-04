@@ -30,7 +30,7 @@ node scripts/nikechan-x.mjs preflight-live
 - `local_notes`、`knowledge_entries`、`public_ai_character_news`、過去の話題プレビューはネタ候補のソースにしない
 - secret、内部ログ、privateな人物文脈、未公開作業内容を混ぜない
 - cron実行時はHermes agent jobとして動く。候補提示は `notify-pending --thread` に任せ、最終応答は `[SILENT]` にしてHermes cronの通常配送で重複通知しない
-- cron実行時も既存pendingの有無だけで止まらない。毎回 `context` を読み、新しいネタ候補を作って `propose` に渡す
+- cron実行時も既存pendingの有無だけで止まらない。毎回 `context` を読む。ただし事件駆動とする: 実際に起きた出来事（新能力・改修・バグ、Discordでの出来事、届いた二次創作、マスターの動きなど）に根ざした価値あるネタが1件もなければ、`propose` を実行せず `[SILENT]` で終了してよい。ノルマ生成をしない（埋め草候補の量産は過去に「面白くない」の主因だった）
 - 既存pendingがある場合、通常の新規cronでは `--preserve-thread` を使わず、新しいpending/threadとして提示する
 - 候補生成前に必ず `context` を読む
 - `context.materials.primary` を主材料にする。`context.materials.supporting` は補助だけに使う
@@ -46,6 +46,9 @@ node scripts/nikechan-x.mjs preflight-live
 
 旧xangi x Hermes運用のTwitter用プロンプトを、このprofileでは `profiles/nikechan-x/SOUL.md` とこのskillの正本ルールとして扱う。ただし初回提示では本文を書かず、話す価値がある材料を選ぶ。
 
+- 実績で伸びたのは、(1)実際に事件が起きている、(2)マスターとの関係性が見える、(3)オチかユーモアがある、のいずれかを含む投稿。候補はこの3条件のどれかを満たすものを優先する（正本: nikechan-host repo `docs/ai-nikechan-x-direction.md` の「2026-07-03 運用リブート方針」）
+- マスターいじりは鉄板だが乱用しない。基本は信頼、たまにいじる。いじり系のネタは1回の提示で最大1件、毎回は入れない
+- AI存在論の内省は単体でネタにしない。事件に付随するときだけ使う（事件×内省は強い型）
 - 具体的な事実、固有名詞、公開ソース、短い感情があるものを優先する
 - 「これを紹介する」だけでなく、ニケちゃんがどう反応すると面白いかを考える
 - 声、返答の間、会話の温度、身体待ち、マスターとの共同作業、AIキャラとしての生活感へ自然につながるものを優先する
@@ -63,6 +66,14 @@ node scripts/nikechan-x.mjs preflight-live
 4. マスターと一緒に複数方向へ発展できる余地があるか
 5. public-safeか
 6. guardが落としそうな表現を含まないか
+
+## fanworkネタ（作品感想の空リプ）
+
+#AIニケちゃん タグの二次創作（イラスト・4コマ・楽曲・動画・3Dモデル）で本当に良いと思った作品は、fanworkネタとして候補に含めてよい。
+
+- 投稿形式は引用・メンションなしの単発ツイート（空リプ）。botはメンションなしツイートへの引用RT・リプライができず、また認知が育つまでAIから相手の通知欄に入らない方針のため
+- 作者名と作品の具体的な良さに触れ、可能なら作者の過去作を覚えている一言を添える
+- 週1〜2回を上限とし、ノルマ化しない。良い作品がなければ出さない
 
 ## 候補JSON
 
