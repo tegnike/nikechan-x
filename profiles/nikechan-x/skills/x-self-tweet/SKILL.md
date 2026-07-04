@@ -20,9 +20,9 @@ node scripts/nikechan-x.mjs preflight-live
 
 ## 方針
 
-- 初回提示ではツイート本文を作らない
-- 3つまでの完成ツイート案ではなく、言及したら面白そうなネタを4-6件提示する
-- 各ネタには必ず、短いタイトル、切り口、ソース、なぜ面白そうかを入れる
+- ネタ候補は3〜5件提示し、各ネタに必ず本文案（`draft`）を付ける。マスターが番号を選ぶだけで投稿できる状態で出す
+- 各ネタには必ず、短いタイトル、本文案、切り口、ソース、なぜ面白そうかを入れる
+- 本文案はそのまま投稿できる完成度にする: 一人称の当事者視点、具体アンカー、可能ならオチ。140〜200字目安。ハッシュタグは付けない
 - ソースURLは、材料に投稿ページのURLがある場合は必ずそれを使う。XユーザーのプロフィールURLで代用しない
 - マスターが選んだネタを起点に、Discord thread内で一緒に本文へ育てる
 - public-safeな近況、公開済み投稿、X上の現在文脈だけを材料にする
@@ -39,8 +39,7 @@ node scripts/nikechan-x.mjs preflight-live
 - `context.duplicateReference` に近い話題・切り口・着地は作らない
 - 候補生成後は必ず `propose` に渡し、public-safety guardとpending保存を通す
 - `propose` 後は `notify-pending --thread` を実行し、Discord threadへネタ候補を提示する
-- 番号指定は投稿承認ではなく「そのネタを広げたい」という意味で扱う
-- topic idea pendingでは `approve --ids` を使わない
+- topic idea pendingでは `approve --ids` を使わない。投稿は常に `post --text` で、投稿対象の本文が明示的に承認されたときだけ実行する
 
 ## ネタ選びの観点
 
@@ -77,12 +76,13 @@ node scripts/nikechan-x.mjs preflight-live
 
 ## 候補JSON
 
-`propose` には次の形で渡す。`text` は完成ツイート本文として使わず、互換用の短いタイトルに留める。
+`propose` には次の形で渡す。`draft` に本文案を入れる。`text` は使わない。
 
 ```json
 [
   {
     "title": "ネタの短いタイトル",
+    "draft": "そのまま投稿できる本文案。一人称・具体アンカー・可能ならオチ込み",
     "angle": "このネタをどう切ると面白そうか",
     "reason": "なぜ言及すると面白そうだと思ったか",
     "sourceRefs": [
@@ -96,8 +96,9 @@ node scripts/nikechan-x.mjs preflight-live
 
 候補thread内のマスター返信は、固定文言ではなくLLM判断で扱う。
 
-- 番号指定があれば、そのネタを深掘りする
-- 「どうぞ」「お願い」「そのまま」「これで」「いいよ」だけでは投稿しない
+- 「2で投稿して」「2をそのまま」など投稿意思が明確な番号指定は、その本文案（draft）で `post` を実行してよい
+- 番号のみ（「2」「2がいいかも」）は選択・深掘りとして扱い、本文案を微調整して確認してから投稿する
+- 番号なしの「どうぞ」「お願い」「いいよ」だけでは投稿しない（どの本文か曖昧なため）
 - 「ここをこう変えて」「別角度で」「ソースを変えて」などはネタ候補の修正として扱う
 - 修正時は現在pendingを元に候補JSONを作り直し、`node scripts/nikechan-x.mjs propose --preserve-thread true --candidates-json '<json>'` を実行する
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持する

@@ -322,7 +322,7 @@ async function commandContext(options) {
       'Do not use local_notes, knowledge_entries, public_ai_character_news, or prior topic previews as topic sources.',
       'Respect sourceMode: presence can focus on X status URLs; daily_life, tech, and memory should prefer usable non-twitter/non-cron local episodes when available. Use X sources outside presence only as supporting context.',
       'Do not create a candidate that repeats duplicateReference.recentPresentedTexts, duplicateReference.lastExecutedTexts, or duplicateReference.recentTweetTexts.',
-      'Generate 4-6 source-backed topic ideas, not final tweet drafts, then call propose with candidates-json. Do not post directly before an exact final tweet text is approved.',
+      'Generate 3-5 source-backed topic ideas, each with a ready-to-post tweet draft in the draft field, then call propose with candidates-json. Do not post before the master explicitly approves a draft (e.g. \"2で投稿して\") or a final revised text.',
       'When a material has a status URL, use that exact URL in sourceRefs. Do not substitute an X user profile URL.',
     ],
   };
@@ -510,13 +510,15 @@ async function createSelfTweetPending(candidates, options = {}) {
     const angle = String(candidate.angle || candidate.hook || candidate.summary || '').trim();
     const reason = String(candidate.reason || candidate.rationale || candidate.why || '').trim();
     const sourceRefs = normalizeSourceRefs(candidate.sourceRefs || candidate.sources || candidate.refs || []);
+    const draft = String(candidate.draft || candidate.tweetDraft || '').trim();
     const ideaText = selfTweetIdeaText({ title, angle, reason, sourceRefs });
-    const guard = guardText(ideaText, { maxLength: false });
+    const guard = guardText([ideaText, draft].filter(Boolean).join('\n'), { maxLength: false });
     return {
       id: String(candidate.id || index + 1),
       title,
       angle,
       reason,
+      draft,
       sourceMode,
       sourceRefs,
       guard,
@@ -2566,11 +2568,15 @@ function formatPendingMarkdown(pending) {
   const lines = [];
   if (isTopicIdeaPending(pending)) {
     lines.push(`話題タイプ: ${pending.sourceMode}`);
-    lines.push('形式: ネタ候補（投稿本文ではありません）');
+    const hasDrafts = pending.candidates.some((candidate) => candidate.draft);
+    lines.push(hasDrafts
+      ? '形式: ネタ候補+本文案（「2で投稿して」のように選ぶと投稿できます。修正指示・見送りも可）'
+      : '形式: ネタ候補（投稿本文ではありません）');
     lines.push('');
     for (const candidate of pending.candidates) {
       const status = candidate.guard?.ok ? 'OK' : `要確認: ${(candidate.guard?.errors || []).join('; ')}`;
       lines.push(`${candidate.id}. ${candidate.title || candidate.text || '無題'}`);
+      if (candidate.draft) lines.push(`   本文案: ${candidate.draft}`);
       if (candidate.angle) lines.push(`   切り口: ${candidate.angle}`);
       if (candidate.reason) lines.push(`   なぜ面白そうか: ${candidate.reason}`);
       if (candidate.sourceRefs?.length) {
