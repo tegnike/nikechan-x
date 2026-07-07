@@ -45,9 +45,9 @@ test('news guard requires URL for source hook', () => {
 });
 
 test('source mode rotates deterministically', () => {
-  assert.equal(nextSourceMode(undefined), 'presence');
-  assert.equal(nextSourceMode('presence'), 'daily_life');
-  assert.equal(nextSourceMode('random'), 'presence');
+  assert.equal(nextSourceMode(undefined), 'incident');
+  assert.equal(nextSourceMode('presence'), 'incident');
+  assert.equal(nextSourceMode('incident'), 'incident');
 });
 
 test('approval replies parse into explicit actions', () => {
@@ -93,19 +93,15 @@ test('context materials are partitioned by source mode', () => {
     publicWiki: { data: [] },
   };
 
-  const presence = buildContextMaterials('presence', sources);
-  const daily = buildContextMaterials('daily_life', sources);
-  const tech = buildContextMaterials('tech', sources);
+  const incident = buildContextMaterials('incident', sources);
   const news = buildContextMaterials('news', sources);
 
-  assert.match(presence.primary.map((item) => item.text).join('\n'), /ぷにけ/u);
-  assert.doesNotMatch(presence.primary.map((item) => item.text).join('\n'), /小松菜/u);
-  assert.match(daily.primary.map((item) => item.text).join('\n'), /小松菜/u);
+  const incidentText = incident.primary.map((item) => item.text).join('\n');
+  assert.match(incidentText, /ぷにけ/u);
+  assert.match(incidentText, /小松菜/u);
+  assert.doesNotMatch(incidentText, /nikechan\.com\/ai-news|example\.com\/ai-news/u);
   assert.match(news.primary.map((item) => item.text).join('\n'), /https:\/\/zenn/u);
-  assert.doesNotMatch(news.primary.map((item) => item.text).join('\n'), /AIタグの説明/u);
   assert.doesNotMatch(news.primary.map((item) => item.text).join('\n'), /nikechan\.com\/ai-news|example\.com\/ai-news/u);
-  assert.match(tech.primary.map((item) => `${item.title || ''}\n${item.text || ''}`).join('\n'), /Hermes/u);
-  assert.doesNotMatch(tech.primary.map((item) => item.text).join('\n'), /AIタグの説明/u);
 });
 
 test('duplicate reference exposes recent outputs without separate manual list', () => {

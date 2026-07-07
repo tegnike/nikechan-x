@@ -11,7 +11,7 @@ const X_PROFILE_DIR = resolve(ROOT, 'profiles', 'nikechan-x');
 const X_PROFILE_SOUL = resolve(X_PROFILE_DIR, 'SOUL.md');
 const STATE_DIR = process.env.NIKECHAN_X_STATE_DIR || resolve(ROOT, 'state');
 const ACCOUNT_NAME = process.env.X_ACCOUNT_NAME || 'ai_nikechan';
-const AUTO_SOURCE_MODES = ['presence', 'daily_life', 'tech', 'memory', 'random'];
+const AUTO_SOURCE_MODES = ['incident'];
 const SOURCE_MODES = [...AUTO_SOURCE_MODES, 'news'];
 const AI_NEWS_LIST_URL = 'https://nikechan.com/ai-news';
 const AI_NEWS_TWEET_MAX_AGE_MS = 48 * 60 * 60 * 1000;
@@ -100,7 +100,7 @@ export function guardText(text, options = {}) {
 
 export function nextSourceMode(previous) {
   const index = AUTO_SOURCE_MODES.indexOf(previous);
-  if (index < 0) return 'presence';
+  if (index < 0) return AUTO_SOURCE_MODES[0];
   return AUTO_SOURCE_MODES[(index + 1) % AUTO_SOURCE_MODES.length];
 }
 
@@ -318,9 +318,9 @@ async function commandContext(options) {
     },
     instruction: [
       'Use materials.primary first and materials.supporting only when needed.',
-      'Use only tweet_logs, tweets, and local_episodes as topic sources. local_episodes with source twitter or cron are excluded from self-tweet materials.',
+      'Use only tweet_logs, tweets, and local_episodes as topic sources. local_episodes with source twitter, cron, or aituberkit are excluded from self-tweet materials.',
       'Do not use local_notes, knowledge_entries, public_ai_character_news, or prior topic previews as topic sources.',
-      'Respect sourceMode: presence can focus on X status URLs; daily_life, tech, and memory should prefer usable non-twitter/non-cron local episodes when available. Use X sources outside presence only as supporting context.',
+      'Source mode is incident: treat materials as one pool of real incidents (development events, public reactions, daily happenings) and pick the most interesting ones. If no material is a real incident, do not propose and end silently.',
       'Do not create a candidate that repeats duplicateReference.recentPresentedTexts, duplicateReference.lastExecutedTexts, or duplicateReference.recentTweetTexts.',
       'Generate 3-5 source-backed topic ideas, each with a ready-to-post tweet draft in the draft field, then call propose with candidates-json. Do not post before the master explicitly approves a draft (e.g. \"2で投稿して\") or a final revised text.',
       'When a material has a status URL, use that exact URL in sourceRefs. Do not substitute an X user profile URL.',
@@ -374,7 +374,7 @@ export function buildContextMaterials(sourceMode, sources) {
   const tweetLogs = rows(sources.recentTweetLogs).filter((row) => textOf(row.body) || row.post_id);
   const episodes = rows(sources.publicEpisodes)
     .filter((row) => textOf(row.content))
-    .filter((row) => !['twitter', 'cron'].includes(textOf(row.source)));
+    .filter((row) => !['twitter', 'cron', 'aituberkit'].includes(textOf(row.source)));
   const runRows = rows(sources.runStateRows);
   const aiNewsTweetUrls = aiNewsUrlsFromRunRows(runRows);
 
@@ -408,44 +408,24 @@ export function buildContextMaterials(sourceMode, sources) {
   const publicEpisodeMaterials = episodeMaterials.filter((item) => !isOperationalMaterial(item));
 
   const technical = (item) => /AI(?!ニケちゃん)|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術|実装|機能|スキル|方針/u.test(materialText(item));
-  const daily = (item) => !isOperationalMaterial(item) && /小松菜|キノコ|天気|朝|昼|夜|散歩|食|眠|体調|日常|生活|服|衣装|呉服|季節|ごはん/u.test(materialText(item));
-  const presence = (item) => !isOperationalMaterial(item) && /タグ|#|名前|呼|リプ|メンション|見つけ|反応|RT|創作|ぷにけ/u.test(materialText(item));
   const hasContentUrl = (item) => /https?:\/\//u.test(itemBodyText(item));
 
+  // 事件簿一本化（2026-07-07）: レーン分割をやめ、開発の事件・公開反応・日常の出来事を
+  // 全部並べて、その中から最も面白い事件を選ばせる。newsはx-ai-news-tweet用に残す
   const pools = {
-    presence: {
-      primary: [...tweetLogMaterials, ...publicEpisodeMaterials, ...tweetMaterials].filter(presence),
-      supporting: [...tweetLogMaterials, ...tweetMaterials, ...publicEpisodeMaterials].filter(presence),
-      angle: 'X上で見つけてもらった存在感、名前呼び、再接触の入口。',
-    },
-    daily_life: {
-      primary: [...publicEpisodeMaterials, ...tweetMaterials].filter(daily),
-      supporting: [...tweetMaterials, ...tweetLogMaterials].filter(daily),
-      angle: '公開してよい日常・体調・季節・軽い近況。',
-    },
-    tech: {
-      primary: [...publicEpisodeMaterials, ...tweetMaterials].filter((item) => technical(item) && !presence(item) && !daily(item)),
-      supporting: [...tweetMaterials, ...tweetLogMaterials].filter(technical),
-      angle: 'AIキャラ、音声、記憶、開発、技術的な気づき。',
+    incident: {
+      primary: [...publicEpisodeMaterials.slice(0, 5), ...tweetLogMaterials.slice(0, 3)],
+      supporting: [...tweetLogMaterials.slice(3, 6), ...tweetMaterials],
+      angle: '実際に起きた事件（開発・公開反応・日常）を一人称の事件簿として語る。',
     },
     news: {
       primary: [...tweetMaterials, ...tweetLogMaterials, ...publicEpisodeMaterials].filter((item) => technical(item) && hasContentUrl(item)),
       supporting: [...tweetMaterials, ...tweetLogMaterials].filter((item) => technical(item) && hasContentUrl(item)),
       angle: 'URL付きの公開投稿への短い反応。',
     },
-    memory: {
-      primary: [...publicEpisodeMaterials],
-      supporting: [...tweetMaterials, ...tweetLogMaterials].filter((item) => textOf(item.text || item.title)),
-      angle: '最近の記憶や活動ログを、公開可能な一言に変換する。',
-    },
-    random: {
-      primary: rotateMaterials([...publicEpisodeMaterials, ...tweetMaterials]),
-      supporting: rotateMaterials([...tweetLogMaterials, ...tweetMaterials, ...publicEpisodeMaterials]),
-      angle: '固定カテゴリに寄せすぎず、公開可能な材料から軽く選ぶ。',
-    },
   };
 
-  const selected = pools[sourceMode] || pools.presence;
+  const selected = pools[sourceMode] || pools.incident;
   const primary = selected.primary.length ? selected.primary : selected.supporting;
   const supporting = selected.primary.length ? selected.supporting : [];
   return {
@@ -504,7 +484,7 @@ async function commandPropose(options) {
 }
 
 async function createSelfTweetPending(candidates, options = {}) {
-  const sourceMode = options.sourceMode || options['source-mode'] || 'presence';
+  const sourceMode = options.sourceMode || options['source-mode'] || 'incident';
   const items = candidates.slice(0, 5).map((candidate, index) => {
     const title = String(candidate.title || candidate.topic || candidate.text || candidate.tweetText || '').trim();
     const angle = String(candidate.angle || candidate.hook || candidate.summary || '').trim();

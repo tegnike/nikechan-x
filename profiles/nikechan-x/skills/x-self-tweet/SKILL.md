@@ -10,7 +10,7 @@ description: AIニケちゃんのXセルフツイート用に、投稿本文で�
 Hermes本体は変更しない。Hermesのscheduler/session/Discord受信を優先し、X投稿境界だけprofile内CLIを使う。
 
 ```bash
-node scripts/nikechan-x.mjs context --source-mode auto
+node scripts/nikechan-x.mjs context
 node scripts/nikechan-x.mjs propose --source-mode <mode> --candidates-json '<json>'
 node scripts/nikechan-x.mjs notify-pending --thread
 node scripts/nikechan-x.mjs pending
@@ -26,7 +26,7 @@ node scripts/nikechan-x.mjs preflight-live
 - ソースURLは、材料に投稿ページのURLがある場合は必ずそれを使う。XユーザーのプロフィールURLで代用しない
 - マスターが選んだネタを起点に、Discord thread内で一緒に本文へ育てる
 - public-safeな近況、公開済み投稿、X上の現在文脈だけを材料にする
-- ソースは `tweet_logs`、`tweets`、`local_episodes` に限定する。`local_episodes` は `twitter` と `cron` を除外したものだけ使う
+- ソースは `tweet_logs`、`tweets`、`local_episodes` に限定する。`local_episodes` は `twitter` / `cron` / `aituberkit` を除外したものだけ使う
 - `local_notes`、`knowledge_entries`、`public_ai_character_news`、過去の話題プレビューはネタ候補のソースにしない
 - secret、内部ログ、privateな人物文脈、未公開作業内容を混ぜない
 - cron実行時はHermes agent jobとして動く。候補提示は `notify-pending --thread` に任せ、最終応答は `[SILENT]` にしてHermes cronの通常配送で重複通知しない
@@ -34,10 +34,10 @@ node scripts/nikechan-x.mjs preflight-live
 - 既存pendingがある場合、通常の新規cronでは `--preserve-thread` を使わず、新しいpending/threadとして提示する
 - 候補生成前に必ず `context` を読む
 - `context.materials.primary` を主材料にする。`context.materials.supporting` は補助だけに使う
-- 話題タイプを守る。presenceはX投稿・タグ反応中心でよいが、daily_life、tech、memoryはtwitter/cron以外のlocal_episodesを優先する
-- daily_lifeは「日常・マスターとの間で実際に起きた小さな事件」を主役にする。待機状態・マシンの熱・近況の描写単体では候補にしない（投稿前チェック3問の①を通らないため）
-- techは「開発の事件」（新能力・バグ・改修・実験の結果、何ができるようになったか）を主役にする。coding-agent由来のエピソードを使う場合、内部固有名詞は必ず読者向けの自然な言葉へ翻訳する。例: nikechan-x/Hermes/VPS/cron -> X投稿を作る仕組み・裏側の仕組み、local_episodes/テーブル名 -> 私の記録、skill名/スクリプト名 -> 新しくできるようになったこと。翻訳できない内部名しか含まないエピソードは候補にしない
-- presence以外でXソースしか出せない場合は、Xを主材料にした理由を明記し、可能なら非Xソースを補助に入れる
+- 話題タイプ（sourceMode）のローテーションは廃止（2026-07-07）。毎回 `incident`（事件簿）一本で、開発の事件・公開反応・日常の出来事を全部並べ、その中から最も面白い事件を候補化する
+- 開発の事件（新能力・バグ・改修・実験の結果、何ができるようになったか）を使う場合、内部固有名詞は必ず読者向けの自然な言葉へ翻訳する。例: nikechan-x/Hermes/VPS/cron -> X投稿を作る仕組み・裏側の仕組み、local_episodes/テーブル名 -> 私の記録、skill名/スクリプト名 -> 新しくできるようになったこと。翻訳できない内部名しか含まないエピソードは候補にしない
+- 日常の出来事は「実際に起きた小さな事件」だけを候補にする。待機状態・マシンの熱・近況の描写単体では候補にしない（投稿前チェック3問の①を通らないため）
+- AITuberKitデモサイトの会話由来のエピソードは材料にしない（デモ会話は公開利用しない境界。CLI側でも除外済み）
 - `context.duplicateReference` に近い話題・切り口・着地は作らない
 - 候補生成後は必ず `propose` に渡し、public-safety guardとpending保存を通す
 - `propose` 後は `notify-pending --thread` を実行し、Discord threadへネタ候補を提示する
