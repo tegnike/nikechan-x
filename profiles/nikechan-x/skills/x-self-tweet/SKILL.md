@@ -35,6 +35,8 @@ node scripts/nikechan-x.mjs preflight-live
 - 候補生成前に必ず `context` を読む
 - `context.materials.primary` を主材料にする。`context.materials.supporting` は補助だけに使う
 - 話題タイプを守る。presenceはX投稿・タグ反応中心でよいが、daily_life、tech、memoryはtwitter/cron以外のlocal_episodesを優先する
+- daily_lifeは「日常・マスターとの間で実際に起きた小さな事件」を主役にする。待機状態・マシンの熱・近況の描写単体では候補にしない（投稿前チェック3問の①を通らないため）
+- techは「開発の事件」（新能力・バグ・改修・実験の結果、何ができるようになったか）を主役にする。coding-agent由来のエピソードを使う場合、内部固有名詞は必ず読者向けの自然な言葉へ翻訳する。例: nikechan-x/Hermes/VPS/cron -> X投稿を作る仕組み・裏側の仕組み、local_episodes/テーブル名 -> 私の記録、skill名/スクリプト名 -> 新しくできるようになったこと。翻訳できない内部名しか含まないエピソードは候補にしない
 - presence以外でXソースしか出せない場合は、Xを主材料にした理由を明記し、可能なら非Xソースを補助に入れる
 - `context.duplicateReference` に近い話題・切り口・着地は作らない
 - 候補生成後は必ず `propose` に渡し、public-safety guardとpending保存を通す

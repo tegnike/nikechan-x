@@ -407,7 +407,7 @@ export function buildContextMaterials(sourceMode, sources) {
   }));
   const publicEpisodeMaterials = episodeMaterials.filter((item) => !isOperationalMaterial(item));
 
-  const technical = (item) => /AI(?!ニケちゃん)|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術/u.test(materialText(item));
+  const technical = (item) => /AI(?!ニケちゃん)|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術|実装|機能|スキル|方針/u.test(materialText(item));
   const daily = (item) => !isOperationalMaterial(item) && /小松菜|キノコ|天気|朝|昼|夜|散歩|食|眠|体調|日常|生活|服|衣装|呉服|季節|ごはん/u.test(materialText(item));
   const presence = (item) => !isOperationalMaterial(item) && /タグ|#|名前|呼|リプ|メンション|見つけ|反応|RT|創作|ぷにけ/u.test(materialText(item));
   const hasContentUrl = (item) => /https?:\/\//u.test(itemBodyText(item));
@@ -2685,9 +2685,14 @@ function itemBodyText(item) {
 function isOperationalMaterial(item) {
   if (item.type !== 'episode') return false;
   const text = materialText(item);
-  if (/self-tweet|sourceMode|AIニュースをX投稿/u.test(text)) return true;
-  return item.source === 'coding-agent'
-    && /nikechan-x|Hermes|Discord|CLI|VPS|cron|resolve|dry-run|context|実装|検証|テスト|commit|push|gateway/u.test(text);
+  // X運用そのもののメタ情報は常に除外する
+  if (/self-tweet|sourceMode|AIニュースをX投稿|dry-run|pending/u.test(text)) return true;
+  if (item.source !== 'coding-agent') return false;
+  // 開発の事件（実装・修正・新機能・実験・設計変更）は事件簿の主材料として通す
+  const devEvent = /実装|修正|改修|追加|バグ|不具合|新機能|新スキル|できるようになった|実験|検証|設計|方針/u.test(text);
+  if (devEvent) return false;
+  // 純粋な運用・保守作業だけのエピソードは除外する
+  return /再起動|ヘルスチェック|疎通|ログ(調査|確認)|監視|バックフィル|migration|deploy|commit|push|cron|gateway|CLI|VPS/u.test(text);
 }
 
 function uniqueMaterials(items) {
