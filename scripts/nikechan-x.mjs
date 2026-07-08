@@ -736,8 +736,9 @@ async function commandMentionContext(options) {
       'Do not call notify-mention-pending for an existingPending that already has threadId or notifiedAt.',
       'Use candidates[].nickname exactly when naming the author, but only when it sounds natural in context.',
       'Read candidates[].mediaContext before drafting. If it contains photo/video media, inspect the media URL or usable alt text before proposing any reply/quote.',
-      'If attached media exists but you cannot verify its visual content, set replyAction=skip and quoteAction=skip. Do not guess from the surrounding text.',
-      'For any media-grounded reply/quote, include mediaEvidence with the concrete visual detail or alt text used.',
+      'If attached media exists, call vision_analyze on its media URL before drafting any reply/quote.',
+      'If vision_analyze fails or the visual content is still unclear, set replyAction=skip and quoteAction=skip. Do not guess from the surrounding text.',
+      'For any media-grounded reply/quote, include mediaEvidence with the concrete visual detail you actually used.',
       'Do not start every reply or quote with candidates[].nickname followed by a comma; avoid templated name-first replies.',
       'If nickname is empty, do not call the author by name.',
       'Write reason, replyText, and quoteText in Japanese.',
@@ -1661,19 +1662,12 @@ function normalizeMentionItems(inputItems, candidates) {
 function validateMentionMediaGrounding(item, candidate) {
   const mediaContext = String(candidate?.mediaContext || item?.mediaContext || '');
   if (!mentionMediaContextHasMedia(mediaContext)) return { ok: true, errors: [], warnings: [] };
-  if (!mentionMediaContextHasUsableDescription(mediaContext)) {
-    return {
-      ok: false,
-      errors: ['attached media requires visual verification before drafting'],
-      warnings: ['media present but no verified visual description or alt text was available'],
-    };
-  }
   const evidence = String(item?.mediaEvidence || '').trim();
   if (evidence.length < 8) {
     return {
       ok: false,
       errors: ['missing mediaEvidence for media-grounded reply'],
-      warnings: ['include the concrete visual detail or alt text used for the draft'],
+      warnings: ['inspect attached media with vision_analyze first, then include concrete visual evidence'],
     };
   }
   return { ok: true, errors: [], warnings: [] };
@@ -1683,11 +1677,6 @@ function mentionMediaContextHasMedia(mediaContext) {
   const text = String(mediaContext || '');
   if (!text || /（メディアなし）/u.test(text)) return false;
   return /"type"\s*:\s*"(?:photo|video|animated_gif)"|"photos"\s*:\s*\[|"videos"\s*:\s*\[/u.test(text);
-}
-
-function mentionMediaContextHasUsableDescription(mediaContext) {
-  const text = String(mediaContext || '');
-  return /"(?:altText|alt_text|ext_alt_text|description)"\s*:\s*"[^"]{8,}"/u.test(text);
 }
 
 function mergeGuardResult(base, extra) {

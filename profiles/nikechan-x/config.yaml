@@ -172,7 +172,6 @@ agent:
   - messaging
   - todo
   - image_gen
-  - vision
   - video
   - tts
   - session_search
@@ -187,6 +186,7 @@ platform_toolsets:
   discord:
   - terminal
   - web
+  - vision
 
 # Relax command approval friction for X self-tweet / reaction payloads.
 # Keep dangerous-command checks, but disable Tirith Unicode false positives.

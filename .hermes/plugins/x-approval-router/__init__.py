@@ -145,6 +145,7 @@ def _build_rewrite_prompt(match: dict[str, Any], master_reply: str) -> str:
 - 番号や m1/m2 指定があれば該当候補だけを承認します。
 - 番号指定のない承認語なら、CLI側で現在提示中の実行対象を全件選ぶため `--ids` を付けないでください。
 - 「ここをこう変えて」「もう少し柔らかく」「この文だけ直して」などは修正です。LLM判断で候補全文を作り直し、`node scripts/nikechan-x.mjs mention-propose --preserve-thread true --items-json '<json>'` を実行してください。
+- 候補に mediaContext の画像URLがある場合、返信案を作る前に必ず `vision_analyze` で画像内容を確認し、確認した具体的な視覚情報を `mediaEvidence` に入れてください。画像確認に失敗した場合は replyAction/quoteAction を skip にしてください。
 - 質問・確認・ログ確認なら投稿せず、短く答えて pending を維持してください。
 - このthreadでは self-tweet pending を実行しないでください。{archived_note}
 - 承認時は `node scripts/nikechan-x.mjs mention-approve --thread-id {thread_id}` を実行してください。番号指定がある場合だけ `--ids m1,m2` を付けます。
@@ -217,6 +218,9 @@ def _compact_pending(workflow: str, pending: dict[str, Any]) -> dict[str, Any]:
                 "replyText": item.get("replyText"),
                 "quoteAction": item.get("quoteAction"),
                 "quoteText": item.get("quoteText"),
+                "mediaContext": item.get("mediaContext"),
+                "mediaEvidence": item.get("mediaEvidence"),
+                "mediaGuard": item.get("mediaGuard"),
                 "reason": item.get("reason"),
             }
             for item in source_items
@@ -233,6 +237,7 @@ def _compact_pending(workflow: str, pending: dict[str, Any]) -> dict[str, Any]:
                 "body": item.get("body"),
                 "originalTweetId": item.get("originalTweetId"),
                 "originalTweetText": item.get("originalTweetText"),
+                "mediaContext": item.get("mediaContext"),
             }
             for item in pending.get("candidates", [])
         ]
