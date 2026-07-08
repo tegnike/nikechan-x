@@ -183,6 +183,10 @@ agent:
 platform_toolsets:
   cli:
   - hermes-cli
+  cron:
+  - terminal
+  - web
+  - vision
   discord:
   - terminal
   - web

@@ -28,6 +28,9 @@ node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
 - 返信・引用RTの冒頭を毎回 `nickname、` / `nicknameさん、` の形にしない。名前呼びは文中に自然に入る時だけ使う
 - `nickname` が空の場合は相手を名前で呼ばない
 - `body` と `originalTweetText` は `mention-context.candidates[]` の原文をそのまま使い、要約・翻訳しない
+- `mediaContext` に photo / video / animated_gif がある候補は、返信案・引用案を作る前に必ず `vision_analyze` で実メディアを確認する
+- 画像確認に失敗した場合、または具体的な視覚内容を説明できない場合は `replyAction=skip` / `quoteAction=skip` にする。周辺文脈だけで推測しない
+- 画像を踏まえて返信・引用する場合は、確認した具体的な視覚情報を `mediaEvidence` に入れる
 - `reason` / `replyText` / `quoteText` は必ず日本語で書く
 - 返信と引用RTは別軸で判断するが、過剰反応は避ける
 - 不適切、文脈不足、内輪の運用品質指摘、反応不要なものは skip
@@ -55,6 +58,8 @@ node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
       "body": "相手の本文を原文コピー（要約・翻訳禁止）",
       "originalTweetId": "元ツイートID。なければ省略",
       "originalTweetText": "元ツイート本文を原文コピー。なければ省略",
+      "mediaContext": "候補にメディアがある場合はmention-contextの値をそのまま含める",
+      "mediaEvidence": "画像を踏まえる場合はvision_analyzeで確認した具体的な視覚情報",
       "replyAction": "reply",
       "quoteAction": "skip",
       "reason": "日本語の判断理由",
