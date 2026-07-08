@@ -735,6 +735,9 @@ async function commandMentionContext(options) {
       'If candidates is not empty, create a fresh plan from candidates and call mention-propose even when existingPending is present.',
       'Do not call notify-mention-pending for an existingPending that already has threadId or notifiedAt.',
       'Use candidates[].nickname exactly when naming the author, but only when it sounds natural in context.',
+      'Read candidates[].mediaContext before drafting. If it contains photo/video media, inspect the media URL or usable alt text before proposing any reply/quote.',
+      'If attached media exists but you cannot verify its visual content, set replyAction=skip and quoteAction=skip. Do not guess from the surrounding text.',
+      'For any media-grounded reply/quote, include mediaEvidence with the concrete visual detail or alt text used.',
       'Do not start every reply or quote with candidates[].nickname followed by a comma; avoid templated name-first replies.',
       'If nickname is empty, do not call the author by name.',
       'Write reason, replyText, and quoteText in Japanese.',
@@ -754,6 +757,8 @@ async function commandMentionContext(options) {
           body: 'exact candidate body; do not summarize or translate',
           originalTweetId: 'optional',
           originalTweetText: 'optional',
+          mediaContext: 'required source context when candidates[].mediaContext is present',
+          mediaEvidence: 'required concrete visual detail when replying or quoting media-present candidates',
           replyAction: 'reply|skip',
           quoteAction: 'quote|skip',
           reason: 'short public-safe reason in Japanese',
@@ -1374,7 +1379,10 @@ async function collectMentionReactionCandidates() {
     .slice(0, 10);
 
   const candidates = await Promise.all(deduped.map(async (log, index) => {
-    const authorContext = await collectTweetAuthorContext(log);
+    const [authorContext, mediaContext] = await Promise.all([
+      collectTweetAuthorContext(log),
+      collectTweetMediaContext(log.post_id),
+    ]);
     const originalTweet = log.original_tweet_id
       ? rows(await supabaseGet(`tweets?tweet_id=eq.${encodeURIComponent(log.original_tweet_id)}&select=tweet_id,content,url,created_at,impression_count,like_count,retweet_count,reply_count,quote_count,bookmark_count,metrics_updated_at`))[0]
       : null;
@@ -1394,6 +1402,7 @@ async function collectMentionReactionCandidates() {
       originalTweetText: originalTweet?.content || undefined,
       originalTweetUrl: originalTweet?.url || log.original_tweet_url || undefined,
       personContext: authorContext.text,
+      mediaContext,
     };
   }));
   return candidates.filter((candidate) => candidate.tweetLogId && candidate.postId);
@@ -1416,7 +1425,7 @@ async function collectHashtagReactionCandidates() {
   const candidates = await Promise.all(logs.map(async (log, index) => {
     const [authorContext, mediaContext] = await Promise.all([
       collectTweetAuthorContext(log),
-      collectHashtagMediaContext(log.post_id),
+      collectTweetMediaContext(log.post_id),
     ]);
     return {
       id: `h${index + 1}`,
@@ -1550,7 +1559,7 @@ async function collectThirdPartyContext(text) {
   return results.join('\n\n');
 }
 
-async function collectHashtagMediaContext(postId) {
+async function collectTweetMediaContext(postId) {
   if (!postId) return '（post_idなし）';
   try {
     const controller = new AbortController();
@@ -1613,12 +1622,16 @@ function normalizeMentionItems(inputItems, candidates) {
     const quoteText = sanitizeTweetText(String(item.quoteText || ''));
     const guardedReplyText = guardMentionText(replyText, candidate);
     const guardedQuoteText = guardMentionText(quoteText, candidate);
+    const mediaGuard = validateMentionMediaGrounding(item, candidate);
     const replyGuard = item.replyAction === 'reply' && guardedReplyText
-      ? guardText(guardedReplyText)
-      : { ok: true, errors: [], warnings: [], length: 0, text: '' };
+      ? mergeGuardResult(guardText(guardedReplyText), mediaGuard)
+      : { ok: true, errors: [], warnings: mediaGuard.warnings, length: 0, text: '' };
     const quoteGuard = item.quoteAction === 'quote' && guardedQuoteText
-      ? guardText(guardedQuoteText)
-      : { ok: true, errors: [], warnings: [], length: 0, text: '' };
+      ? mergeGuardResult(guardText(guardedQuoteText), mediaGuard)
+      : { ok: true, errors: [], warnings: mediaGuard.warnings, length: 0, text: '' };
+    const reason = mediaGuard.ok
+      ? String(item.reason || 'AI判定')
+      : '添付メディアの内容を確認できないため、返信案は出さず見送り。';
     return {
       id,
       tweetLogId: String(item.tweetLogId || candidate.tweetLogId),
@@ -1629,9 +1642,12 @@ function normalizeMentionItems(inputItems, candidates) {
       body: String(candidate.body || item.body || ''),
       originalTweetId: candidate.originalTweetId || (item.originalTweetId ? String(item.originalTweetId) : undefined),
       originalTweetText: candidate.originalTweetText || (item.originalTweetText ? String(item.originalTweetText) : undefined),
+      mediaContext: candidate.mediaContext || (item.mediaContext ? String(item.mediaContext) : undefined),
+      mediaEvidence: item.mediaEvidence ? String(item.mediaEvidence).trim() : undefined,
+      mediaGuard,
       replyAction: item.replyAction === 'reply' && guardedReplyText && replyGuard.ok ? 'reply' : 'skip',
       quoteAction: item.quoteAction === 'quote' && guardedQuoteText && quoteGuard.ok ? 'quote' : 'skip',
-      reason: String(item.reason || 'AI判定'),
+      reason,
       replyText: item.replyAction === 'reply' && guardedReplyText && replyGuard.ok ? guardedReplyText : undefined,
       quoteText: item.quoteAction === 'quote' && guardedQuoteText && quoteGuard.ok ? guardedQuoteText : undefined,
       guards: {
@@ -1640,6 +1656,47 @@ function normalizeMentionItems(inputItems, candidates) {
       },
     };
   }).filter(Boolean).slice(0, 10);
+}
+
+function validateMentionMediaGrounding(item, candidate) {
+  const mediaContext = String(candidate?.mediaContext || item?.mediaContext || '');
+  if (!mentionMediaContextHasMedia(mediaContext)) return { ok: true, errors: [], warnings: [] };
+  if (!mentionMediaContextHasUsableDescription(mediaContext)) {
+    return {
+      ok: false,
+      errors: ['attached media requires visual verification before drafting'],
+      warnings: ['media present but no verified visual description or alt text was available'],
+    };
+  }
+  const evidence = String(item?.mediaEvidence || '').trim();
+  if (evidence.length < 8) {
+    return {
+      ok: false,
+      errors: ['missing mediaEvidence for media-grounded reply'],
+      warnings: ['include the concrete visual detail or alt text used for the draft'],
+    };
+  }
+  return { ok: true, errors: [], warnings: [] };
+}
+
+function mentionMediaContextHasMedia(mediaContext) {
+  const text = String(mediaContext || '');
+  if (!text || /（メディアなし）/u.test(text)) return false;
+  return /"type"\s*:\s*"(?:photo|video|animated_gif)"|"photos"\s*:\s*\[|"videos"\s*:\s*\[/u.test(text);
+}
+
+function mentionMediaContextHasUsableDescription(mediaContext) {
+  const text = String(mediaContext || '');
+  return /"(?:altText|alt_text|ext_alt_text|description)"\s*:\s*"[^"]{8,}"/u.test(text);
+}
+
+function mergeGuardResult(base, extra) {
+  return {
+    ...base,
+    ok: Boolean(base.ok && extra.ok),
+    errors: [...(base.errors || []), ...(extra.errors || [])],
+    warnings: [...(base.warnings || []), ...(extra.warnings || [])],
+  };
 }
 
 function normalizeHashtagItems(inputItems, candidates) {
@@ -1927,6 +1984,10 @@ function formatMentionPendingMarkdown(pending) {
   for (const item of pending.items) {
     lines.push(`${item.id}. @${item.username} - 「${truncate(item.body, 90)}」`);
     lines.push(`   判断: reply=${item.replyAction}, quote=${item.quoteAction}`);
+    if (item.mediaContext && mentionMediaContextHasMedia(item.mediaContext)) {
+      lines.push(`   メディア確認: ${item.mediaGuard?.ok ? '確認済み' : '未確認のため送信不可'}`);
+      if (item.mediaEvidence) lines.push(`   画像根拠: ${item.mediaEvidence}`);
+    }
     if (item.replyText) lines.push(`   返信案: ${item.replyText}`);
     if (item.quoteText) lines.push(`   引用案: ${item.quoteText}`);
     lines.push(`   理由: ${item.reason}`);
