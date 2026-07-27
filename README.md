@@ -107,7 +107,7 @@ node scripts/nikechan-x.mjs release-mode --set live --confirm LIVE_X_POSTING
 
 ## Scheduler
 
-VPSではHermes gateway内蔵cronが `/opt/nikechan-x/cron/jobs.json` を読みます。self-tweet / mention-reaction / hashtag-reaction は `no_agent: false` のHermes agent jobとして動き、profile内skillを読み込んでCLIのguard/pending/post境界を呼びます。
+VPSではHermes gateway内蔵cronが `/opt/nikechan-x/cron/jobs.json` を読みます。self-tweet / mention-reaction / hashtag-reaction は `no_agent: false` のHermes agent jobとして動き、profile内skillを読み込んでCLIのguard/pending/post境界を呼びます。 self-tweetの定期候補生成は2026-07-27から停止中で、再開可能なよう定義とskillは保持します。
 
 通常テキストチャンネルへのcron配送にはHermes標準の「毎回新規thread作成」がないため、候補提示のthread作成だけ `notify-pending --thread` でDiscord APIを使います。thread内の返信処理とsession分離はHermesのDiscord adapterに戻します。
 
