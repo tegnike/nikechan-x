@@ -136,43 +136,55 @@ test('duplicate reference exposes recent outputs without separate manual list', 
   assert.deepEqual(result.recentTweetTexts, ['直近ツイートです。']);
 });
 
-test('AI news tweet text uses comment and title URL format', () => {
+test('AI news tweet text selects a long-form variant and appends only the source URL', () => {
+  const variants = [
+    'グラッドキューブが、ハイブリッド型AIアバター接客「SiTest AIコンシェルジュ」を発表しました。\n\nウェブと実店舗の案内をつなぐ仕組みで、私はキャラクターへの愛着まで接客設計に入れている点に注目しています。',
+    'グラッドキューブは、ウェブと実店舗で使えるAIアバター接客を公開しました。\n\n私が見てみたいのは、同じキャラが画面と店舗の間でどこまで関係をつなげられるかです。',
+    'グラッドキューブが、AIアバター接客の新サービスを提供します。\n\n回答精度だけでなく、キャラクターとしての親しみを接客に持ち込む設計が私には興味深いです。',
+  ];
   const text = buildAiNewsTweetText({
     title: 'グラッドキューブ、ハイブリッド型AIアバター接客「SiTest AIコンシェルジュ」の提供開始',
     url: 'https://corp.glad-cube.com/news/pressrelease/1256/',
-    nike_comment: 'ウェブと実店舗モニターをRAGで繋ぐハイブリッド構成、回答精度とキャラクター愛着を同時に狙う点がSiTestの既存ツールとの違いとして際立ちそうです。',
-  });
+    x_post_variants: variants,
+  }, 0);
 
-  assert.match(text, /^ウェブと実店舗モニター/u);
-  assert.match(text, /\n\nグラッドキューブ、ハイブリッド型AIアバター接客「SiTest AIコンシェルジュ」の提供開始 https:\/\/corp\.glad-cube\.com\/news\/pressrelease\/1256\/$/u);
-  assert.doesNotMatch(text, /記事:|ニュース一覧/u);
-  assert.equal(guardText(text, { sourceMode: 'news' }).ok, true);
-  assert.ok([...text].length <= 280);
+  assert.ok(text.startsWith(variants[0]));
+  assert.match(text, /\n\nhttps:\/\/corp\.glad-cube\.com\/news\/pressrelease\/1256\/$/u);
+  assert.doesNotMatch(text, /グラッドキューブ、ハイブリッド型/u);
 });
 
-test('AI news tweet text counts long URLs with X URL weight', () => {
+test('AI news long-form text uses the dedicated max length', () => {
+  const longVariant = 'ニュースの発表内容を最初の一文で明確に説明しました。\n\n' + '私がAIキャラクターの体験として注目している具体的な理由を説明します。'.repeat(10);
   const text = buildAiNewsTweetText({
-    title: 'In2ition AI、常時接続型AIコンパニオン「Iris」を発表',
     url: 'https://www.prnewswire.com/news-releases/in2ition-ai-launches-iris-the-always-on-ai-companion-that-participates-in-conversations-instead-of-analyzing-them-after-they-end-302789131.html',
-    nike_comment: 'リアルタイム参加型のAIコンパニオンは、運用視点でユーザー体験の自然さを一段高めそう。会話の流れをそのまま活かせる点は、今後のAIキャラクター体験の広がりにもつながりそうです。',
-  });
+    x_post_variants: [longVariant, `${longVariant}A`, `${longVariant}B`],
+  }, 0);
 
-  assert.doesNotMatch(text, /点…/u);
-  assert.match(text, /広がりにもつながりそうです。/u);
-  assert.equal(guardText(text, { sourceMode: 'news' }).ok, true);
-  assert.ok(tweetWeightedLength(text) <= 280);
-  assert.ok([...text].length > 280);
+  assert.ok(tweetWeightedLength(text) > 280);
+  assert.equal(guardText(text, { sourceMode: 'news' }).ok, false);
+  assert.equal(guardText(text, { sourceMode: 'news', maxLength: 1000 }).ok, true);
 });
 
-test('AI news tweet eligibility is limited to items from the past day', () => {
+test('AI news tweet eligibility uses the addition time, not the source publication time', () => {
   const now = Date.parse('2026-06-01T12:00:00.000Z');
-  assert.equal(isRecentAiNewsItem({ published_at: '2026-06-01T00:30:00.000Z' }, now), true);
-  assert.equal(isRecentAiNewsItem({ published_at: '2026-05-31T11:59:59.000Z' }, now), false);
+  assert.equal(isRecentAiNewsItem({
+    discovered_at: '2026-06-01T06:00:00.000Z',
+    published_at: '2026-06-01T00:30:00.000Z',
+  }, now), true);
+  assert.equal(isRecentAiNewsItem({
+    discovered_at: '2026-06-01T06:00:00.000Z',
+    published_at: '2026-05-30T11:59:59.000Z',
+  }, now), true);
+  assert.equal(isRecentAiNewsItem({
+    discovered_at: '2026-05-30T11:59:59.000Z',
+    published_at: '2026-06-01T00:30:00.000Z',
+  }, now), false);
   assert.equal(isRecentAiNewsItem({ created_at: '2026-06-01T06:00:00.000Z' }, now), true);
   assert.equal(isRecentAiNewsItem({
     published_at: '2026-05-31T00:00:00.000Z',
     created_at: '2026-06-01T06:00:00.000Z',
   }, now), true);
+  assert.equal(isRecentAiNewsItem({ discovered_at: '2026-06-01T13:00:00.000Z' }, now), false);
   assert.equal(isRecentAiNewsItem({}), false);
 });
 

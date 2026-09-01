@@ -15,6 +15,7 @@ const AUTO_SOURCE_MODES = ['incident'];
 const SOURCE_MODES = [...AUTO_SOURCE_MODES, 'news'];
 const AI_NEWS_LIST_URL = 'https://nikechan.com/ai-news';
 const AI_NEWS_TWEET_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+const AI_NEWS_TWEET_MAX_LENGTH = 1000;
 const X_URL_WEIGHT = 23;
 const DISCORD_THREAD_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DISCORD_THREAD_REGISTRY_PATH = resolve(ROOT, 'discord_threads.json');
@@ -30,7 +31,8 @@ export function guardText(text, options = {}) {
   const length = tweetWeightedLength(normalized);
 
   if (!normalized) errors.push('empty text');
-  if (options.maxLength !== false && length > 280) errors.push(`too long: ${length}/280`);
+  const maxLength = options.maxLength === false ? null : Number(options.maxLength || 280);
+  if (maxLength !== null && length > maxLength) errors.push(`too long: ${length}/${maxLength}`);
 
   const secretPatterns = [
     /\bsk-[A-Za-z0-9_-]{20,}\b/u,
@@ -574,7 +576,7 @@ async function commandAiNewsTweet(options) {
     }
 
     text = buildAiNewsTweetText(item);
-    guard = guardText(text, { sourceMode: 'news' });
+    guard = guardText(text, { sourceMode: 'news', maxLength: AI_NEWS_TWEET_MAX_LENGTH });
     if (guard.ok) break;
 
     const ref = aiNewsRef(item);
@@ -607,7 +609,12 @@ async function commandAiNewsTweet(options) {
   }
 
   const ref = aiNewsRef(item);
-  const result = await postTweet({ action: 'tweet', text, source: 'self-tweet' });
+  const result = await postTweet({
+    action: 'tweet',
+    text,
+    source: 'self-tweet',
+    maxLength: AI_NEWS_TWEET_MAX_LENGTH,
+  });
   const executedAt = new Date().toISOString();
   const payload = {
     item: ref,
@@ -2126,7 +2133,7 @@ async function postTweet(input) {
     required(input.tweetId, '--tweet-id');
   }
   if (['tweet', 'reply', 'quote'].includes(action)) {
-    const guard = guardText(input.text);
+    const guard = guardText(input.text, { maxLength: input.maxLength });
     if (!guard.ok) {
       throw new Error(`text blocked by guard: ${guard.errors.join('; ')}`);
     }
@@ -2363,7 +2370,7 @@ async function recordAiNewsTweetExecution(candidates, execution) {
 async function selectAiNewsTweetItem(limit = 30) {
   const recentSince = encodeURIComponent(new Date(Date.now() - AI_NEWS_TWEET_MAX_AGE_MS).toISOString());
   const [newsResult, presentedState, executedState] = await Promise.all([
-    supabaseGet(`public_ai_character_news?created_at=gte.${recentSince}&order=created_at.asc&limit=${Number(limit) || 30}&select=id,url,title,source_name,source_domain,published_at,discovered_at,summary,nike_comment,category,tags,created_at`),
+    supabaseGet(`public_ai_character_news?created_at=gte.${recentSince}&order=created_at.asc&limit=${Number(limit) || 30}&select=id,url,title,source_name,source_domain,published_at,discovered_at,summary,nike_comment,x_post_variants,category,tags,created_at`),
     getTwitterRunStateValue('ai_news_tweet_presented_items'),
     getTwitterRunStateValue('ai_news_tweet_executed_items'),
   ]);
@@ -2373,27 +2380,36 @@ async function selectAiNewsTweetItem(limit = 30) {
   ]);
   return rows(newsResult)
     .filter((item) => textOf(item.url))
-    .filter((item) => textOf(item.nike_comment || item.summary || item.title))
+    .filter((item) => aiNewsTweetVariants(item).length === 3)
     .filter((item) => isRecentAiNewsItem(item))
     .find((item) => !consumed.has(String(item.id)) && !consumed.has(String(item.url)));
 }
 
 export function isRecentAiNewsItem(item, nowMs = Date.now(), maxAgeMs = AI_NEWS_TWEET_MAX_AGE_MS) {
-  const discoveredAt = Date.parse(item?.discovered_at || item?.created_at || '');
-  const publishedAt = Date.parse(item?.published_at || item?.created_at || '');
-  return Number.isFinite(discoveredAt) && nowMs - discoveredAt < maxAgeMs
-    && Number.isFinite(publishedAt) && nowMs - publishedAt < maxAgeMs;
+  const addedAt = Date.parse(item?.discovered_at || item?.created_at || '');
+  const ageMs = nowMs - addedAt;
+  return Number.isFinite(addedAt) && ageMs >= 0 && ageMs < maxAgeMs;
 }
 
-export function buildAiNewsTweetText(item) {
+export function aiNewsTweetVariants(item) {
+  return [...new Set((Array.isArray(item?.x_post_variants) ? item.x_post_variants : [])
+    .map((value) => String(value || '')
+      .replace(/https?:\/\/\S+/gu, '')
+      .replace(/\r\n?/gu, '\n')
+      .replace(/\n{3,}/gu, '\n\n')
+      .trim())
+    .filter(Boolean))];
+}
+
+export function buildAiNewsTweetText(item, randomValue = Math.random()) {
   const articleUrl = textOf(item.url);
-  const title = normalizeAiNewsComment(item.title || item.source_name || '記事');
-  const suffixReserve = `\n\n ${articleUrl}`;
-  const titleMaxLength = Math.max(1, 280 - tweetWeightedLength(suffixReserve));
-  const suffix = `\n\n${clipText(title, titleMaxLength)} ${articleUrl}`;
-  const comment = normalizeAiNewsComment(item.nike_comment || item.summary || item.title);
-  const maxCommentLength = Math.max(0, 280 - tweetWeightedLength(suffix));
-  return `${clipText(comment, maxCommentLength)}${suffix}`.trim();
+  const variants = aiNewsTweetVariants(item);
+  if (!articleUrl || variants.length !== 3) return '';
+  const normalizedRandom = Number.isFinite(Number(randomValue))
+    ? Math.min(0.999999999, Math.max(0, Number(randomValue)))
+    : 0;
+  const selected = variants[Math.floor(normalizedRandom * variants.length)];
+  return `${selected}\n\n${articleUrl}`.trim();
 }
 
 export function tweetWeightedLength(text) {
