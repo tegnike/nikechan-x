@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { prepareOutbox, enqueue, flushOutbox, activityRow } from './storage-outbox.mjs';
 import { createHmac, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile, appendFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -166,6 +167,9 @@ async function main() {
   const command = args.shift();
   try {
     switch (command) {
+      case 'retry-storage':
+        console.log(JSON.stringify(await retryStorage()));
+        break;
       case 'context':
         await commandContext(readOptions(args));
         break;
@@ -2143,8 +2147,9 @@ async function postTweet(input) {
   }
   assertLivePostingAllowed(mode);
 
+  await prepareOutbox(statePath('storage-outbox'));
   const result = await callXApi(input);
-  await recordTweet(result);
+  result.storage = await recordTweet(result);
   return result;
 }
 
@@ -2293,9 +2298,27 @@ function encodeOAuth(value) {
     .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
+// Retry only database inserts. Never replay a provider action for a log failure.
+async function retryStorage() {
+  return flushOutbox(statePath('storage-outbox'), (table, row) => supabaseInsert(table, row, true));
+}
+
+async function queueStorage(table, row) {
+  try {
+    const id = await enqueue(statePath('storage-outbox'), table, row);
+    const summary = await retryStorage();
+    if (summary.pending) console.error(`storage pending: ${summary.pending}; retry-storage performs DB writes only`);
+    return { id, ...summary };
+  } catch {
+    console.error('storage persistence failed after provider action; do not repost');
+    return { status: 'error', retryProvider: false };
+  }
+}
+
 async function recordTweet(result) {
   if (!result?.tweetId) return;
-  await supabaseInsert('tweets', {
+  return queueStorage('tweets', {
+    created_at: new Date().toISOString(),
     tweet_id: result.tweetId,
     content: result.content || '',
     action_type: result.action,
@@ -2307,22 +2330,14 @@ async function recordTweet(result) {
 }
 
 async function recordActivity(stage, parsed, workflow = 'self-tweet', status) {
-  const entry = {
-    at: new Date().toISOString(),
-    workflow,
-    stage,
-    parsed,
-  };
-  await ensureDir(STATE_DIR);
-  await appendFile(statePath('activity.jsonl'), `${JSON.stringify(entry)}\n`);
-  await supabaseInsert('twitter_activity_logs', {
-    workflow,
-    stage,
-    raw_content: JSON.stringify(parsed).slice(0, 3000),
-    parsed,
-    status: status || (stage === 'error' ? 'failed' : stage === 'execute' ? 'success' : 'needs_approval'),
-    created_by: 'nikechan-x',
-  });
+  const entry = { at: new Date().toISOString(), workflow, stage, parsed };
+  // Queue first: a diagnostic JSONL failure must not turn a successful post into a retry.
+  const result = await queueStorage('twitter_activity_logs', activityRow(stage, parsed, workflow, status, entry.at));
+  try {
+    await ensureDir(STATE_DIR);
+    await appendFile(statePath('activity.jsonl'), `${JSON.stringify(entry)}\n`);
+  } catch { console.error('activity JSONL append failed; inspect storage outbox'); }
+  return result;
 }
 
 async function recordTwitterRunState(key, value) {
@@ -2515,18 +2530,19 @@ async function supabaseGet(path) {
   }
 }
 
-async function supabaseInsert(table, row) {
+async function supabaseInsert(table, row, idempotent = false) {
   const base = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!base || !key) return { status: 'skipped', reason: 'supabase env missing' };
   try {
-    const response = await fetch(`${base.replace(/\/$/, '')}/rest/v1/${table}`, {
+    const response = await fetch(`${base.replace(/\/$/, '')}/rest/v1/${table}${idempotent ? '?on_conflict=id' : ''}`, {
       method: 'POST',
+      signal: AbortSignal.timeout(15000),
       headers: {
         apikey: key,
         Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
+        Prefer: idempotent ? 'resolution=ignore-duplicates,return=minimal' : 'return=minimal',
       },
       body: JSON.stringify(row),
     });
