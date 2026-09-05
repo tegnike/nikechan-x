@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveTwitterIdentity } from './twitter-identity.mjs';
 import { prepareOutbox, enqueue, flushOutbox, activityRow } from './storage-outbox.mjs';
 import { createHmac, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile, appendFile, readdir } from 'node:fs/promises';
@@ -1496,50 +1497,18 @@ async function collectTweetAuthorContext(log) {
   };
 }
 
-async function findOrCreateTwitterUser({ platformUserId, username, displayName }) {
-  const byId = platformUserId
-    ? await platformAccountUser(`platform_user_id=eq.${encodeURIComponent(platformUserId)}`)
-    : null;
-  if (byId) return byId;
-  const byUsername = username
-    ? await platformAccountUser(`username=eq.${encodeURIComponent(username)}`)
-    : null;
-  if (byUsername) {
-    if (platformUserId && shouldPersistReactionWorkflow()) {
-      await supabasePatch(`platform_accounts?platform=eq.twitter&username=eq.${encodeURIComponent(username)}`, {
-        platform_user_id: platformUserId,
+async function findOrCreateTwitterUser(input) {
+  return resolveTwitterIdentity(input, {
+    persist: shouldPersistReactionWorkflow(),
+    findById: (id) => platformAccountUser(`platform_user_id=eq.${encodeURIComponent(id)}`),
+    createById: async (id, username, displayName) => {
+      const result = await supabaseInsertReturning('rpc/get_or_create_user_with_platform', {
+        p_platform: 'twitter', p_platform_user_id: id, p_display_name: displayName || username || id,
+        p_username: username || null, p_guild_nickname: null,
       });
-    }
-    return byUsername;
-  }
-  if (!shouldPersistReactionWorkflow()) {
-    return {
-      id: '',
-      name: displayName || username,
-      nickname: null,
-      bio: null,
-      relationship: null,
-      interaction_count: null,
-      last_interaction_at: null,
-    };
-  }
-  const now = new Date().toISOString();
-  const bio = await fetchFxTwitterBio(username).catch(() => '');
-  const created = await supabaseInsertReturning('users', {
-    name: displayName || username,
-    first_seen_at: now,
-    ...(bio ? { bio } : {}),
+      return Array.isArray(result) ? result[0] : result;
+    },
   });
-  const user = Array.isArray(created) ? created[0] : created;
-  if (!user?.id) return null;
-  await supabaseInsert('platform_accounts', {
-    user_id: user.id,
-    platform: 'twitter',
-    platform_user_id: platformUserId || username,
-    username,
-    display_name: displayName || username,
-  });
-  return user;
 }
 
 async function platformAccountUser(filter) {
