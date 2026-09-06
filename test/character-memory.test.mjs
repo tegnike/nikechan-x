@@ -92,3 +92,18 @@ test('each network action is revalidated when a reply is followed by a quote', a
   });
   assert.deepEqual(actions, ['reply']); assert.equal(result.results[0].error, 'changed'); assert.equal(result.results[0].action, 'reply');
 });
+
+test('embedding outages preserve scoped lexical recall without exposing shadow evidence', async () => {
+  const m = new XCharacterMemory({ mode: 'shadow', embed: async () => { throw Error('embedding unavailable'); }, rpc: async (name, body) => {
+    assert.equal(name, 'memory_recall_v2'); assert.equal(body.p_query_embedding, null); return recall('r', 'shadow');
+  } });
+  assert.equal(await m.context(log), undefined);
+});
+
+test('query vectors are generated once and reused for independent reply/quote records', async () => {
+  let embedded = 0, n = 0;
+  const m = new XCharacterMemory({ mode: 'live', embed: async () => { embedded++; return Array.from({ length: 768 }, (_, i) => i === 0 ? 1 : 0); }, rpc: async (name, body) => {
+    assert.equal(name, 'memory_recall_v2'); assert.equal(JSON.parse(body.p_query_embedding).length, 768); return recall('r' + ++n);
+  } });
+  await m.context(log); assert.equal(embedded, 1); assert.equal(n, 2);
+});

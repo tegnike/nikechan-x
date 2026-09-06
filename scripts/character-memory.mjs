@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-const allowed = new Set(['memory_recall_v1', 'memory_validate_recall_v1', 'memory_delivery_v1']);
+const allowed = new Set(['memory_recall_v2', 'memory_recall_v1', 'memory_validate_recall_v1', 'memory_delivery_v1']);
 export function memoryRpc({ url, key, fetcher = fetch }) {
   return async (name, body) => {
     if (!allowed.has(name) || !url || !key) throw Error('character_memory_unavailable');
@@ -14,15 +14,18 @@ export function memoryRpc({ url, key, fetcher = fetch }) {
 }
 const snapshotKey = r => JSON.stringify([r.snapshot?.epoch, r.snapshot?.policy_hash, r.snapshot?.mode]);
 export class XCharacterMemory {
-  constructor({ mode = 'off', rpc, observe = () => {} }) {
+  constructor({ mode = 'off', rpc, observe = () => {}, embed }) {
     if (!['off', 'shadow', 'live'].includes(mode)) throw Error('invalid_character_memory_mode');
-    this.mode = mode; this.rpc = rpc; this.observe = observe;
+    this.mode = mode; this.rpc = rpc; this.observe = observe; this.embed = embed;
   }
   async context(log) {
     if (this.mode === 'off') return undefined;
     try {
       if (!/^[0-9]+$/.test(String(log.user_id))) throw Error('unresolved_native_author');
-      const recall = async () => this.rpc('memory_recall_v1', { p_runtime: 'x-public', p_destination: 'twitter:public',
+      let vector = null;
+      if (this.embed) { try { vector = JSON.stringify(await this.embed(String(log.body ?? ''))); } catch {} }
+      const recall = async () => this.rpc(this.embed ? 'memory_recall_v2' : 'memory_recall_v1', {
+        ...(this.embed ? { p_query_embedding: vector } : {}), p_runtime: 'x-public', p_destination: 'twitter:public',
         p_actor_platform: 'twitter', p_actor_native_id: String(log.user_id), p_query: String(log.body ?? ''),
         p_turn_key: randomUUID(), p_attempt: 1 });
       const reply = await recall();
@@ -79,4 +82,20 @@ export class XCharacterMemory {
       this.observe({ mode: 'live', status: 'delivery_audit_unknown' });
     }
   }
+}
+
+
+// This endpoint creates vectors only; all reply drafting stays on its existing model.
+export function queryEmbedding(apiKey, fetcher = fetch) {
+  return async text => {
+    const r = await fetcher('https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({ model: 'models/gemini-embedding-001', content: { parts: [{ text }] }, outputDimensionality: 768, taskType: 'RETRIEVAL_QUERY' }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) throw Error('query_embedding_unavailable');
+    const vector = (await r.json()).embedding?.values;
+    if (!Array.isArray(vector) || vector.length !== 768 || vector.some(v => typeof v !== 'number' || !Number.isFinite(v)) || !vector.some(v => v !== 0)) throw Error('invalid_query_embedding');
+    return vector;
+  };
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { XCharacterMemory, memoryRpc } from './character-memory.mjs';
+import { XCharacterMemory, memoryRpc, queryEmbedding } from './character-memory.mjs';
 import { resolveTwitterIdentity } from './twitter-identity.mjs';
 import { prepareOutbox, enqueue, flushOutbox, activityRow } from './storage-outbox.mjs';
 import { createHmac, randomUUID } from 'node:crypto';
@@ -27,6 +27,7 @@ const MENTION_REACTION_BLOCKED_HANDLES = new Set(['kirisaki_99', 'bl_fox26', 'h_
 
 await loadDotenv(resolve(ROOT, '.env'));
 const xMemory = new XCharacterMemory({ mode: process.env.NIKECHAN_X_CHARACTER_MEMORY_MODE || 'off',
+  embed: process.env.NIKECHAN_X_CHARACTER_MEMORY_EMBEDDING === 'true' && process.env.GEMINI_API_KEY ? queryEmbedding(process.env.GEMINI_API_KEY) : undefined,
   rpc: memoryRpc({ url: process.env.SUPABASE_URL, key: process.env.SUPABASE_SERVICE_ROLE_KEY }),
   observe: event => console.error(JSON.stringify({ event: 'character_memory', ...event })),
 });
