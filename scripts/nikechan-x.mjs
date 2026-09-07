@@ -2394,7 +2394,7 @@ async function selectAiNewsTweetItem(limit = 30) {
   ]);
   return rows(newsResult)
     .filter((item) => textOf(item.url))
-    .filter((item) => aiNewsTweetVariants(item).length === 3)
+    .filter((item) => aiNewsTweetVariants(item).length >= 1)
     .filter((item) => isRecentAiNewsItem(item))
     .find((item) => !consumed.has(String(item.id)) && !consumed.has(String(item.url)));
 }
@@ -2418,7 +2418,7 @@ export function aiNewsTweetVariants(item) {
 export function buildAiNewsTweetText(item, randomValue = Math.random()) {
   const articleUrl = textOf(item.url);
   const variants = aiNewsTweetVariants(item);
-  if (!articleUrl || variants.length !== 3) return '';
+  if (!articleUrl || variants.length < 1) return '';
   const normalizedRandom = Number.isFinite(Number(randomValue))
     ? Math.min(0.999999999, Math.max(0, Number(randomValue)))
     : 0;

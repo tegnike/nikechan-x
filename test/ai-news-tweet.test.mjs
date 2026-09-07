@@ -35,7 +35,14 @@ test('AIニュースだけは280字を超える専用上限で検査できる', 
   assert.equal(guardText(text, { sourceMode: 'news', maxLength: 1000 }).ok, true);
 });
 
-test('X専用文がない記事は旧形式へフォールバックしない', () => {
+test('X専用文が0案の記事だけ旧形式へフォールバックしない', () => {
   assert.equal(buildAiNewsTweetText({ url: 'https://example.com/news', nike_comment: '旧コメント' }), '');
-  assert.equal(buildAiNewsTweetText({ url: 'https://example.com/news', x_post_variants: [body, `${body}\nB`] }), '');
+});
+
+test('X専用文が1案以上あれば保存案から投稿文を作る', () => {
+  const one = buildAiNewsTweetText({ url: 'https://example.com/news', x_post_variants: [body] }, 0.9);
+  assert.ok(one.startsWith(body));
+  assert.ok(one.endsWith('\n\nhttps://example.com/news'));
+  const two = buildAiNewsTweetText({ url: 'https://example.com/news', x_post_variants: [body, `${body}\nB`] }, 0.75);
+  assert.ok(two.includes(`${body}\nB`));
 });
