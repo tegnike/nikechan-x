@@ -6,10 +6,10 @@ const recall = (id, mode = 'live') => ({ run_id: id, snapshot: { mode, epoch: 5,
 test('shadow performs stored-data recall but does not expose evidence to drafting', async () => {
   const events = []; let calls = 0;
   const m = new XCharacterMemory({ mode: 'shadow', observe: e => events.push(e), rpc: async (name, body) => {
-    calls++; assert.equal(name, 'memory_recall_v1'); assert.equal(body.p_actor_native_id, '123'); return recall('r', 'shadow');
+    calls++; if(name==='memory_recall_episodes_v1')return {...recall('e','shadow'),candidates:[]}; assert.equal(name, 'memory_recall_v1'); assert.equal(body.p_actor_native_id, '123'); return recall('r', 'shadow');
   } });
   assert.equal(await m.context(log), undefined);
-  assert.equal(calls, 1); assert.equal(events[0].candidates, 1);
+  assert.equal(calls, 4); assert.equal(events[0].candidates, 1);
 });
 test('shadow outage is observable while live outage prevents old-context fallback', async () => {
   const rpc = async () => { throw Error('offline'); };
@@ -19,7 +19,7 @@ test('shadow outage is observable while live outage prevents old-context fallbac
 test('reply and quote have independent delivery records from one unchanged snapshot', async () => {
   let n = 0; const requests = [];
   const m = new XCharacterMemory({ mode: 'live', rpc: async (name, body) => {
-    requests.push({ name, body }); return name === 'memory_recall_v1' ? recall('run' + ++n) : true;
+    requests.push({ name, body }); return name === 'memory_recall_episodes_v1' ? {...recall('episode'+ ++n),candidates:[]} : name === 'memory_recall_v1' ? recall('run' + ++n) : true;
   } });
   const context = await m.context(log);
   const item = { replyAction: 'reply', quoteAction: 'quote', replyText: '応援します', quoteText: '発表会だそうです', replyUsedMemoryIds: ['memory'], quoteUsedMemoryIds: [] };
@@ -95,7 +95,7 @@ test('each network action is revalidated when a reply is followed by a quote', a
 
 test('embedding outages preserve scoped lexical recall without exposing shadow evidence', async () => {
   const m = new XCharacterMemory({ mode: 'shadow', embed: async () => { throw Error('embedding unavailable'); }, rpc: async (name, body) => {
-    assert.equal(name, 'memory_recall_v2'); assert.equal(body.p_query_embedding, null); return recall('r', 'shadow');
+    if(name==='memory_recall_episodes_v1')return {...recall('e','shadow'),candidates:[]}; assert.equal(name, 'memory_recall_v2'); assert.equal(body.p_query_embedding, null); return recall('r', 'shadow');
   } });
   assert.equal(await m.context(log), undefined);
 });
@@ -103,7 +103,7 @@ test('embedding outages preserve scoped lexical recall without exposing shadow e
 test('query vectors are generated once and reused for independent reply/quote records', async () => {
   let embedded = 0, n = 0;
   const m = new XCharacterMemory({ mode: 'live', embed: async () => { embedded++; return Array.from({ length: 768 }, (_, i) => i === 0 ? 1 : 0); }, rpc: async (name, body) => {
-    assert.equal(name, 'memory_recall_v2'); assert.equal(JSON.parse(body.p_query_embedding).length, 768); return recall('r' + ++n);
+    assert.ok(['memory_recall_v2','memory_recall_episodes_v1'].includes(name)); assert.equal(JSON.parse(body.p_query_embedding).length, 768); return {...recall('r'+ ++n),candidates:name==='memory_recall_episodes_v1'?[]:[{item_id:'memory'}]};
   } });
-  await m.context(log); assert.equal(embedded, 1); assert.equal(n, 2);
+  await m.context(log); assert.equal(embedded, 1); assert.equal(n, 4);
 });
