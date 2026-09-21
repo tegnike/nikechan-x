@@ -7,7 +7,7 @@ import { createMemoryEmbedder, runMemoryEmbeddingCycle } from './lib-character-m
 import { runXMemoryCycle } from './lib-x-memory-pipeline.mjs';
 const env = { ...await loadEnv(process.env.MEMORY_ENV_FILE || resolve('.env')), ...process.env };
 const client = new SupabaseClient({ url: env.SUPABASE_URL, key: env.SUPABASE_SERVICE_ROLE_KEY });
-const allowed = new Set(['memory_reconcile_x_origins_v1','memory_x_source_snapshot_v1','memory_stage_x_batch_v1',
+const allowed = new Set(['memory_reconcile_x_origins_v1','memory_x_source_snapshot_v1','memory_x_source_snapshot_page_v1','memory_stage_x_batch_v1',
  'memory_claim_x_batches_v1','memory_publish_x_batch_v1','memory_fail_x_batch_v1','memory_claim_x_batch_embeddings_v1',
  'memory_publish_x_batch_embedding_v1','memory_fail_x_batch_embedding_v1','memory_claim_embeddings_v1','memory_publish_embedding_v1','memory_fail_embedding_v1']);
 const rpc = (name, body) => { if (!allowed.has(name)) throw Error('invalid_x_rpc'); return client.rpc(name,body,{timeoutMs:30000}); };

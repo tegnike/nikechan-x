@@ -1,3 +1,4 @@
+import { fetchXMemorySnapshot } from './lib-x-memory-snapshot.mjs';
 import { groupXBatches } from './lib-x-memory-batches.mjs';
 import { extractXBatch } from './lib-x-memory-extraction.mjs';
 import { characterEmbeddingModel, validateMemoryVector } from './lib-character-memory-embedding.mjs';
@@ -18,7 +19,7 @@ export async function runXMemoryCycle({ rpc, model, embed, since = '2026-09-06T0
     if (pages > 200) throw Error('x_reconcile_limit_reached');
   }
   if (!processingEnabled) return { ...report, processing_disabled: true };
-  const rows = await rpc('memory_x_source_snapshot_v1', { p_since: since, p_limit: 20000 });
+  const rows = await fetchXMemorySnapshot(rpc, since);
   const grouped = groupXBatches(rows, { now, reservedRevisionIds: rows.filter(r => r.reserved).map(r => r.revision_id) });
   report.rejected = grouped.rejected.length;
   for (const batch of grouped.batches) {
