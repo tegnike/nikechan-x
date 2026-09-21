@@ -20,6 +20,7 @@ const rpc = async (name, body) => {
  try {
  if (!allowed.has(name)) throw Error('invalid_x_rpc');
  for(let attempt=0;;attempt++){
+  if(name==='memory_publish_x_batch_v1'&&!alive())throw Error('bulk_deadline_reached');
   try{return await client.rpc(name,body,{timeoutMs:30000});}
   catch(error){
    if(!String(error.message).includes('57014')||attempt>=4||!alive()||stopped)throw error;
@@ -105,7 +106,7 @@ async function extract(worker){
     await rpc('memory_publish_x_batch_v1',{p_batch_id:input.batch_id,p_input_hash:input.input_hash,p_lease_token:input.lease_token,p_result:result.value,p_extractor:result.model,p_prompt_hash:result.prompt_hash});
     failures=0;log('ready',{worker,batch_id:input.batch_id,memories:result.value.memory_items.length,usage:result.usage});
    }catch(e){
-    const code=safeCode(e);if(code==='db_statement_timeout'){log('lease_retry_after_expiry',{worker,batch_id:input.batch_id,code});await sleep(60000);continue;}await rpc('memory_fail_x_batch_v1',{p_batch_id:input.batch_id,p_lease_token:input.lease_token,p_error_code:code});
+    const code=safeCode(e);if(['db_statement_timeout','bulk_deadline_reached'].includes(code)){log('lease_retry_after_expiry',{worker,batch_id:input.batch_id,code});await sleep(60000);continue;}await rpc('memory_fail_x_batch_v1',{p_batch_id:input.batch_id,p_lease_token:input.lease_token,p_error_code:code});
     failures++;log('failed',{worker,batch_id:input.batch_id,code});
     if(['model_usage_limit','model_authentication'].includes(code)){stopped=true;log('provider_stop',{code});return;}
     await sleep(Math.min(600000,30000*2**Math.min(failures,4)));
