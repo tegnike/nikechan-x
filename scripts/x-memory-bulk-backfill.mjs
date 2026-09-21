@@ -39,7 +39,7 @@ const safeCode=e=>/^[a-z_]+$/.test(e.code||e.message||'')?(e.code||e.message):'b
 log('start',{since,until,deadline:new Date(deadline).toISOString(),concurrency:Number(process.env.X_BULK_CONCURRENCY||3)});
 for(const table of (process.env.X_BULK_SKIP_CAPTURE==='1'?[]:['tweet_logs','tweets','my_tweets'])) {
  let after='',total=0,failed=0;
- while(alive()) {
+ while(alive()&&!stopped) {
   const page=await rpc('memory_reconcile_x_origins_v1',{p_table:table,p_since:since,p_after:after,p_limit:100});
   if(page.disabled)throw Error('capture_disabled');
   total+=page.processed||0;failed+=page.failed||0;
@@ -70,7 +70,7 @@ async function stage(){
 }
 async function extract(worker){
  let failures=0;
- while(alive()&&!stopped){
+ while(Date.now()<deadline-600000&&!stopped){
   try{
    const jobs=await rpc('memory_claim_x_batches_v1',{p_limit:1});
    if(!jobs.length){if(stageDone){const remaining=await client.fetchAll('memory_x_batches',{select:'id',limit:1,filters:['status=in.(pending,processing)']});if(!remaining.length){log('worker_drained',{worker});return;}}await sleep(30000);continue;}
