@@ -16,7 +16,7 @@ const allowed = new Set(['memory_reconcile_x_origins_v1','memory_x_source_snapsh
 let publicationTail=Promise.resolve();
 const rpc = async (name, body) => {
  let release;
- if(name==='memory_publish_x_batch_v1'){const previous=publicationTail;publicationTail=new Promise(r=>{release=r;});await previous;}
+ if(['memory_publish_x_batch_v1','memory_claim_x_batches_v1'].includes(name)){const previous=publicationTail;publicationTail=new Promise(r=>{release=r;});await previous;}
  try {
  if (!allowed.has(name)) throw Error('invalid_x_rpc');
  for(let attempt=0;;attempt++){
