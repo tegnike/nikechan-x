@@ -1,15 +1,22 @@
 /** Collect all pages before grouping so page boundaries never split threads. */
 export async function fetchXMemorySnapshot(rpc, since, maxRows = 20000, options = {}) {
- const rows = []; let after = ''; let pageSize = 100;
+ const rows = []; let after = ''; let pageSize = 100; let consecutiveFailures = 0;
  while (true) {
   if (options.shouldStop?.()) throw Error('x_snapshot_cancelled');
   const pageStarted=Date.now();
   let page;
   try { page = await rpc('memory_x_source_snapshot_page_v1', {p_since:since,p_after:after,p_limit:pageSize}); }
   catch (error) {
-   if (String(error.message).includes('57014') && pageSize > 10) { pageSize = Math.max(10, Math.floor(pageSize / 2)); continue; }
+   if (String(error.message).includes('57014')) {
+    consecutiveFailures++;
+    const canShrink=pageSize>10;
+    pageSize=Math.max(10,Math.floor(pageSize/2));
+    if(options.onTransient){await options.onTransient({after,rows:rows.length,pageSize,failures:consecutiveFailures,code:'db_statement_timeout'});continue;}
+    if(canShrink)continue;
+   }
    throw error;
   }
+  consecutiveFailures=0;
   if (!Array.isArray(page)) throw Error('invalid_x_snapshot_page');
   for (const row of page) {
    if (typeof row.source_key !== 'string' || row.source_key <= after) throw Error('x_snapshot_cursor_stalled');

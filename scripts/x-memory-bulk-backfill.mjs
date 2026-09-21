@@ -23,7 +23,7 @@ const rpc = async (name, body) => {
   if(name==='memory_publish_x_batch_v1'&&!alive())throw Error('bulk_deadline_reached');
   try{return await client.rpc(name,body,{timeoutMs:30000});}
   catch(error){
-   if(!String(error.message).includes('57014')||attempt>=4||!alive()||stopped)throw error;
+   if(name==='memory_x_source_snapshot_page_v1'||!String(error.message).includes('57014')||attempt>=4||!alive()||stopped)throw error;
    log('db_retry',{rpc:name,attempt:attempt+1,code:'db_statement_timeout'});
    await sleep(Math.min(30000,1000*2**attempt));
   }
@@ -72,7 +72,7 @@ for(const table of (process.env.X_BULK_SKIP_CAPTURE==='1'?[]:['tweet_logs','twee
 async function stage(){
  while(alive()&&!stopped){
   try{
-   const rows=await fetchXMemorySnapshot(rpc,since,20000,{shouldStop:()=>stopped||!alive(),onPage:progress=>log('snapshot_page',progress)});
+   const rows=await fetchXMemorySnapshot(rpc,since,20000,{shouldStop:()=>stopped||!alive(),onPage:progress=>log('snapshot_page',progress),onTransient:async progress=>{const cooldown=Math.min(60000,2000*2**Math.min(progress.failures-1,5));log('snapshot_cooling',{...progress,cooldown_ms:cooldown});await sleep(cooldown);}});
    log('snapshot_loaded',{sources:rows.length});
    const groupedAt=Date.now();
    const bounded=rows.filter(r=>Date.parse(r.occurred_at)<=Date.parse(until));
@@ -81,17 +81,24 @@ async function stage(){
    let staged=0,conflicts=0,refresh=false;
    for(const batch of grouped.batches){
     if(!alive()||stopped)break;
-    try{await rpc('memory_stage_x_batch_v1',{p_batch:batch});staged++;if(staged%100===0)log('stage_progress',{staged,total:grouped.batches.length});}
-    catch(e){const code=safeCode(e);conflicts++;log('stage_error',{code,batch_key:batch.batch_key});
-     if(['db_statement_timeout','x_primary_already_reserved','x_evidence_unavailable','x_source_not_stable'].includes(code)){refresh=true;break;}
-     throw e;
+    let stageAttempts=0;
+    while(alive()&&!stopped){
+     try{await rpc('memory_stage_x_batch_v1',{p_batch:batch});staged++;if(staged%100===0)log('stage_progress',{staged,total:grouped.batches.length});break;}
+     catch(e){const code=safeCode(e);
+      if(code==='db_statement_timeout'){stageAttempts++;const cooldown=Math.min(60000,5000*2**Math.min(stageAttempts-1,4));log('stage_cooling',{code,batch_key:batch.batch_key,attempt:stageAttempts,cooldown_ms:cooldown});await sleep(cooldown);continue;}
+      conflicts++;log('stage_error',{code,batch_key:batch.batch_key});
+      if(['x_primary_already_reserved','x_evidence_unavailable','x_source_not_stable'].includes(code)){refresh=true;break;}
+      throw e;
+     }
     }
+    if(refresh)break;
+    await sleep(100);
    }
    const waiting=bounded.filter(r=>!r.reserved&&Date.parse(r.observed_at)>Date.now()-600000).length;
    log('stage',{sources:rows.length,staged,conflicts,rejected:grouped.rejected.length,waiting_stability:waiting});
    if(!waiting&&!refresh){stageDone=true;return;}
    await sleep(60000);
-  }catch(e){log('stage_fatal',{code:safeCode(e),detail:String(e.message).slice(0,800)});stopped=true;return;}
+  }catch(e){const code=safeCode(e);if(code==='db_statement_timeout'){log('stage_cooling',{code,cooldown_ms:60000});await sleep(60000);continue;}log('stage_fatal',{code,detail:String(e.message).slice(0,800)});stopped=true;return;}
  }
 }
 async function extract(worker){
