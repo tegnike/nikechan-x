@@ -13,7 +13,11 @@ const client = new SupabaseClient({ url: env.SUPABASE_URL, key: env.SUPABASE_SER
 const allowed = new Set(['memory_reconcile_x_origins_v1','memory_x_source_snapshot_v1','memory_x_source_snapshot_page_v1','memory_stage_x_batch_v1',
  'memory_claim_x_batches_v1','memory_publish_x_batch_v1','memory_fail_x_batch_v1','memory_claim_x_batch_embeddings_v1',
  'memory_publish_x_batch_embedding_v1','memory_fail_x_batch_embedding_v1','memory_claim_embeddings_v1','memory_publish_embedding_v1','memory_fail_embedding_v1']);
+let publicationTail=Promise.resolve();
 const rpc = async (name, body) => {
+ let release;
+ if(name==='memory_publish_x_batch_v1'){const previous=publicationTail;publicationTail=new Promise(r=>{release=r;});await previous;}
+ try {
  if (!allowed.has(name)) throw Error('invalid_x_rpc');
  for(let attempt=0;;attempt++){
   try{return await client.rpc(name,body,{timeoutMs:30000});}
@@ -23,6 +27,7 @@ const rpc = async (name, body) => {
    await sleep(Math.min(30000,1000*2**attempt));
   }
  }
+ } finally { release?.(); }
 };
 const model = async (_stage,instructions,input,schema) => {
  const result = await new Promise((ok,fail) => {
