@@ -1,7 +1,9 @@
 /** Collect all pages before grouping so page boundaries never split threads. */
-export async function fetchXMemorySnapshot(rpc, since, maxRows = 20000) {
+export async function fetchXMemorySnapshot(rpc, since, maxRows = 20000, options = {}) {
  const rows = []; let after = ''; let pageSize = 100;
  while (true) {
+  if (options.shouldStop?.()) throw Error('x_snapshot_cancelled');
+  const pageStarted=Date.now();
   let page;
   try { page = await rpc('memory_x_source_snapshot_page_v1', {p_since:since,p_after:after,p_limit:pageSize}); }
   catch (error) {
@@ -14,6 +16,7 @@ export async function fetchXMemorySnapshot(rpc, since, maxRows = 20000) {
    after = row.source_key; rows.push(row);
    if (rows.length > maxRows) throw Error('x_snapshot_limit_reached');
   }
+  options.onPage?.({rows:rows.length,after,pageSize,ms:Date.now()-pageStarted});
   if (page.length < pageSize) return rows;
  }
 }

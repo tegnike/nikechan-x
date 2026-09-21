@@ -52,7 +52,7 @@ for(const table of (process.env.X_BULK_SKIP_CAPTURE==='1'?[]:['tweet_logs','twee
 async function stage(){
  while(alive()&&!stopped){
   try{
-   const rows=await fetchXMemorySnapshot(rpc,since);
+   const rows=await fetchXMemorySnapshot(rpc,since,20000,{shouldStop:()=>stopped||!alive(),onPage:progress=>log('snapshot_page',progress)});
    log('snapshot_loaded',{sources:rows.length});
    const groupedAt=Date.now();
    const bounded=rows.filter(r=>Date.parse(r.occurred_at)<=Date.parse(until));
