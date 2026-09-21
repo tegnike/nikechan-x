@@ -13,7 +13,17 @@ const client = new SupabaseClient({ url: env.SUPABASE_URL, key: env.SUPABASE_SER
 const allowed = new Set(['memory_reconcile_x_origins_v1','memory_x_source_snapshot_v1','memory_x_source_snapshot_page_v1','memory_stage_x_batch_v1',
  'memory_claim_x_batches_v1','memory_publish_x_batch_v1','memory_fail_x_batch_v1','memory_claim_x_batch_embeddings_v1',
  'memory_publish_x_batch_embedding_v1','memory_fail_x_batch_embedding_v1','memory_claim_embeddings_v1','memory_publish_embedding_v1','memory_fail_embedding_v1']);
-const rpc = (name, body) => { if (!allowed.has(name)) throw Error('invalid_x_rpc'); return client.rpc(name,body,{timeoutMs:30000}); };
+const rpc = async (name, body) => {
+ if (!allowed.has(name)) throw Error('invalid_x_rpc');
+ for(let attempt=0;;attempt++){
+  try{return await client.rpc(name,body,{timeoutMs:30000});}
+  catch(error){
+   if(!String(error.message).includes('57014')||attempt>=4||!alive()||stopped)throw error;
+   log('db_retry',{rpc:name,attempt:attempt+1,code:'db_statement_timeout'});
+   await sleep(Math.min(30000,1000*2**attempt));
+  }
+ }
+};
 const model = async (_stage,instructions,input,schema) => {
  const result = await new Promise((ok,fail) => {
   const child = spawn('python3',[resolve(dirname(fileURLToPath(import.meta.url)),'x-memory-codex-model.py')],
@@ -35,7 +45,11 @@ const alive=()=>Date.now()<deadline;
 const embed=createMemoryEmbedder(env.GEMINI_API_KEY);
 let stopped=false,stageDone=false;
 process.on('SIGTERM',()=>{stopped=true;log('stop_requested');});
-const safeCode=e=>/^[a-z_]+$/.test(e.code||e.message||'')?(e.code||e.message):'bulk_operation_failed';
+const safeCode=e=>{
+ if(String(e.message).includes('57014'))return 'db_statement_timeout';
+ const match=String(e.message).match(/"message":"([a-z_]+)"/);if(match)return match[1];
+ return /^[a-z_]+$/.test(e.code||e.message||'')?(e.code||e.message):'bulk_operation_failed';
+};
 log('start',{since,until,deadline:new Date(deadline).toISOString(),concurrency:Number(process.env.X_BULK_CONCURRENCY||3)});
 for(const table of (process.env.X_BULK_SKIP_CAPTURE==='1'?[]:['tweet_logs','tweets','my_tweets'])) {
  let after='',total=0,failed=0;
@@ -58,15 +72,18 @@ async function stage(){
    const bounded=rows.filter(r=>Date.parse(r.occurred_at)<=Date.parse(until));
    const grouped=groupXBatches(bounded,{reservedRevisionIds:rows.filter(r=>r.reserved).map(r=>r.revision_id)});
    log('grouped',{batches:grouped.batches.length,ms:Date.now()-groupedAt});
-   let staged=0,conflicts=0;
+   let staged=0,conflicts=0,refresh=false;
    for(const batch of grouped.batches){
     if(!alive()||stopped)break;
     try{await rpc('memory_stage_x_batch_v1',{p_batch:batch});staged++;if(staged%100===0)log('stage_progress',{staged,total:grouped.batches.length});}
-    catch(e){conflicts++;log('stage_error',{code:safeCode(e)});if(conflicts>=10){stopped=true;break;}}
+    catch(e){const code=safeCode(e);conflicts++;log('stage_error',{code,batch_key:batch.batch_key});
+     if(['db_statement_timeout','x_primary_already_reserved','x_evidence_unavailable','x_source_not_stable'].includes(code)){refresh=true;break;}
+     throw e;
+    }
    }
    const waiting=bounded.filter(r=>!r.reserved&&Date.parse(r.observed_at)>Date.now()-600000).length;
    log('stage',{sources:rows.length,staged,conflicts,rejected:grouped.rejected.length,waiting_stability:waiting});
-   if(!waiting){stageDone=true;return;}
+   if(!waiting&&!refresh){stageDone=true;return;}
    await sleep(60000);
   }catch(e){log('stage_fatal',{code:safeCode(e),detail:String(e.message).slice(0,800)});stopped=true;return;}
  }
@@ -83,7 +100,7 @@ async function extract(worker){
     await rpc('memory_publish_x_batch_v1',{p_batch_id:input.batch_id,p_input_hash:input.input_hash,p_lease_token:input.lease_token,p_result:result.value,p_extractor:result.model,p_prompt_hash:result.prompt_hash});
     failures=0;log('ready',{worker,batch_id:input.batch_id,memories:result.value.memory_items.length,usage:result.usage});
    }catch(e){
-    const code=safeCode(e);await rpc('memory_fail_x_batch_v1',{p_batch_id:input.batch_id,p_lease_token:input.lease_token,p_error_code:code});
+    const code=safeCode(e);if(code==='db_statement_timeout'){log('lease_retry_after_expiry',{worker,batch_id:input.batch_id,code});await sleep(60000);continue;}await rpc('memory_fail_x_batch_v1',{p_batch_id:input.batch_id,p_lease_token:input.lease_token,p_error_code:code});
     failures++;log('failed',{worker,batch_id:input.batch_id,code});
     if(['model_usage_limit','model_authentication'].includes(code)){stopped=true;log('provider_stop',{code});return;}
     await sleep(Math.min(600000,30000*2**Math.min(failures,4)));
