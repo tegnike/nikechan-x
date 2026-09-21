@@ -50,7 +50,10 @@ export function groupXBatches(rows, { now = new Date(), reservedRevisionIds = []
   const eligible = [...byKey.values()].filter(row => !reserved.has(row.revision_id)
     && Date.parse(row.observed_at) <= +now - stableMinutes * 60000).sort(order);
   const groups = [];
+  let activeGroups = [];
   for (const row of eligible) {
+    // Older groups can never match the existing maximum-span rule.
+    activeGroups = activeGroups.filter(g => Date.parse(row.occurred_at) - Date.parse(g.messages[0].occurred_at) <= maxHours * 3600000);
     if (characters(row.content) > maxCharacters) { rejected.push({ source_key: row.source_key, reason: 'oversize_source' }); continue; }
     const root = rootFor(row);
     const parent = byKey.get(row.reply_key || row.quote_key);
@@ -66,15 +69,15 @@ export function groupXBatches(rows, { now = new Date(), reservedRevisionIds = []
       if (group.actor !== actor) return false;
       return row.topic_keys.some(key => group.topics.has(key));
     };
-    let group = groups.findLast(matches);
+    let group = activeGroups.findLast(matches);
     if (!group && root && row.direct_with_nike_verified) {
-      group = groups.findLast(g => ['thread','person_interaction'].includes(g.kind) && g.actor === actor
+      group = activeGroups.findLast(g => ['thread','person_interaction'].includes(g.kind) && g.actor === actor
         && row.topic_keys.some(key => g.topics.has(key)) && g.messages.length < maxPrimary
         && g.chars + characters(row.content) <= maxCharacters
         && Date.parse(row.occurred_at) - Date.parse(g.messages[0].occurred_at) <= maxHours * 3600000);
       if (group) { group.kind = 'person_interaction'; group.root = null; group.roots.add(root); }
     }
-    if (!group) { group = { kind, root, roots: new Set(root ? [root] : []), actor, topics: new Set(), messages: [], chars: 0 }; groups.push(group); }
+    if (!group) { group = { kind, root, roots: new Set(root ? [root] : []), actor, topics: new Set(), messages: [], chars: 0 }; groups.push(group); activeGroups.push(group); }
     group.messages.push(row); group.chars += characters(row.content);
     row.topic_keys.forEach(key => group.topics.add(key));
   }

@@ -53,12 +53,15 @@ async function stage(){
  while(alive()&&!stopped){
   try{
    const rows=await fetchXMemorySnapshot(rpc,since);
+   log('snapshot_loaded',{sources:rows.length});
+   const groupedAt=Date.now();
    const bounded=rows.filter(r=>Date.parse(r.occurred_at)<=Date.parse(until));
    const grouped=groupXBatches(bounded,{reservedRevisionIds:rows.filter(r=>r.reserved).map(r=>r.revision_id)});
+   log('grouped',{batches:grouped.batches.length,ms:Date.now()-groupedAt});
    let staged=0,conflicts=0;
    for(const batch of grouped.batches){
     if(!alive()||stopped)break;
-    try{await rpc('memory_stage_x_batch_v1',{p_batch:batch});staged++;}
+    try{await rpc('memory_stage_x_batch_v1',{p_batch:batch});staged++;if(staged%100===0)log('stage_progress',{staged,total:grouped.batches.length});}
     catch(e){conflicts++;log('stage_error',{code:safeCode(e)});if(conflicts>=10){stopped=true;break;}}
    }
    const waiting=bounded.filter(r=>!r.reserved&&Date.parse(r.observed_at)>Date.now()-600000).length;
