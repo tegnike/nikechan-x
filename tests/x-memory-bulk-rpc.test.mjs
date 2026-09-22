@@ -13,7 +13,7 @@ test('aging prevents embedding starvation',async()=>{
  const first=queue(()=>new Promise(r=>release=r));await tick();const embed=queue(()=>order.push('embedding'),3);now=31;const pub=queue(()=>order.push('publish'),0);release();await Promise.all([first,embed,pub]);assert.deepEqual(order,['embedding','publish']);
 });
 const names=['memory_claim_x_batches_v1','memory_publish_x_batch_v1','memory_claim_x_batch_embeddings_v1'];
-function setup(overrides={}){return createXBulkRpc({request:async()=>[],allowed:new Set(names),alive:()=>true,stopped:()=>false,claimCutoff:1000000,log:()=>{},sleep:async()=>{},now:()=>0,...overrides});}
+function setup(overrides={}){return createXBulkRpc({request:async()=>[],allowed:new Set(names),alive:()=>true,stopped:()=>false,claimCutoff:1000000,log:()=>{},sleep:async()=>{},now:()=>0,random:()=>0.5,...overrides});}
 test('transient claim enters shared cooldown but publication proceeds',async()=>{
  let now=0,claims=0,pubs=0;const rpc=setup({now:()=>now,request:async(name)=>{if(name===names[0]){claims++;throw Error('57014');}pubs++;return {};}});
  assert.deepEqual(await rpc(names[0],{}),[]);await rpc(names[0],{});await rpc(names[1],{});assert.equal(claims,1);assert.equal(pubs,1);now=5001;await rpc(names[0],{});assert.equal(claims,2);
