@@ -1,3 +1,4 @@
+import { createXBulkRpc } from './lib-x-memory-bulk-rpc.mjs';
 import { xMemoryTransientCode } from "./lib-x-memory-transient.mjs";
 import { fetchXMemorySnapshot } from './lib-x-memory-snapshot.mjs';
 import { groupXBatches } from './lib-x-memory-batches.mjs';
@@ -14,24 +15,8 @@ const client = new SupabaseClient({ url: env.SUPABASE_URL, key: env.SUPABASE_SER
 const allowed = new Set(['memory_reconcile_x_origins_v1','memory_x_source_snapshot_v1','memory_x_source_snapshot_page_v1','memory_stage_x_batch_v1',
  'memory_claim_x_batches_v1','memory_publish_x_batch_v1','memory_fail_x_batch_v1','memory_claim_x_batch_embeddings_v1',
  'memory_publish_x_batch_embedding_v1','memory_fail_x_batch_embedding_v1','memory_claim_embeddings_v1','memory_publish_embedding_v1','memory_fail_embedding_v1']);
-let publicationTail=Promise.resolve();
-const rpc = async (name, body) => {
- let release;
- if(['memory_publish_x_batch_v1','memory_claim_x_batches_v1'].includes(name)){const previous=publicationTail;publicationTail=new Promise(r=>{release=r;});await previous;}
- try {
- if (!allowed.has(name)) throw Error('invalid_x_rpc');
- if(name==='memory_claim_x_batches_v1'&&(stopped||Date.now()>=deadline-600000))return [];
- for(let attempt=0;;attempt++){
-  if(name==='memory_publish_x_batch_v1'&&!alive())throw Error('bulk_deadline_reached');
-  try{return await client.rpc(name,body,{timeoutMs:30000});}
-  catch(error){
-   if(name==='memory_x_source_snapshot_page_v1'||!xMemoryTransientCode(error)||attempt>=4||!alive()||stopped)throw error;
-   log('db_retry',{rpc:name,attempt:attempt+1,code:xMemoryTransientCode(error)});
-   await sleep(Math.min(30000,1000*2**attempt));
-  }
- }
- } finally { release?.(); }
-};
+const bulkRpc=createXBulkRpc({request:(name,body)=>client.rpc(name,body,{timeoutMs:30000}),allowed,alive:()=>alive(),stopped:()=>stopped,claimCutoff:Date.parse(process.env.X_BULK_DEADLINE||'2026-09-22T20:24:00Z')-600000,log:(...args)=>log(...args),sleep:ms=>sleep(ms)});
+const rpc=(name,body)=>bulkRpc(name,body);
 const model = async (_stage,instructions,input,schema) => {
  const result = await new Promise((ok,fail) => {
   const child = spawn('python3',[resolve(dirname(fileURLToPath(import.meta.url)),'x-memory-codex-model.py')],
