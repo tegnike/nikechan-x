@@ -28,3 +28,9 @@ test('queued claim rechecks stop and cutoff; schema/auth are not retried',async(
  const cutoff=setup({now:()=>1000001,request:async()=>{throw Error('must not execute');}});assert.deepEqual(await cutoff(names[0],{}),[]);
  let calls=0;const invalid=setup({request:async()=>{calls++;throw Error('permission denied');}});await assert.rejects(invalid(names[1],{}),/permission denied/);assert.equal(calls,1);
 });
+
+test('embedding may drain after extraction cutoff until overall deadline',async()=>{
+ let calls=0;const rpc=setup({now:()=>1000001,request:async()=>{calls++;return [];}});
+ await rpc(names[2],{});assert.equal(calls,1);
+ const expired=setup({alive:()=>false});await assert.rejects(expired(names[2],{}),/bulk_deadline_reached/);
+});

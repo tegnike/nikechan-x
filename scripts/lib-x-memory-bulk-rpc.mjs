@@ -21,7 +21,8 @@ export function createXBulkRpc({request,allowed,alive,stopped,claimCutoff,log,sl
    try{
     return await queue(async()=>{
      if(!alive())throw Error('bulk_deadline_reached');
-     if(anyClaim&&(stopped()||now()>=claimCutoff))return [];
+     if(anyClaim&&stopped())return [];
+     if(claim&&now()>=claimCutoff)return [];
      if(claim&&now()<claimCooldownUntil)return [];
      const value=await request(name,body);
      if(claim){claimFailures=0;claimCooldownUntil=0;}
