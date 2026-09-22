@@ -54,6 +54,7 @@ let stopped=false,stageDone=false;
 process.on('SIGTERM',()=>{stopped=true;log('stop_requested');});
 const safeCode=e=>{
  const transient=xMemoryTransientCode(e);if(transient)return transient;
+ if(String(e.message).includes('"code":"P0001"')&&String(e.message).includes('"message":"segment lease or input changed"'))return 'x_publication_lease_changed';
  const match=String(e.message).match(/"message":"([a-z_]+)"/);if(match)return match[1];
  return /^[a-z_]+$/.test(e.code||e.message||'')?(e.code||e.message):'bulk_operation_failed';
 };
@@ -114,7 +115,7 @@ async function extract(worker){
     await rpc('memory_publish_x_batch_v1',{p_batch_id:input.batch_id,p_input_hash:input.input_hash,p_lease_token:input.lease_token,p_result:result.value,p_extractor:result.model,p_prompt_hash:result.prompt_hash});
     failures=0;log('ready',{worker,batch_id:input.batch_id,memories:result.value.memory_items.length,usage:result.usage});
    }catch(e){
-    const code=safeCode(e);if(['db_statement_timeout','db_transport_timeout','db_transport_unavailable','bulk_deadline_reached'].includes(code)){log('lease_retry_after_expiry',{worker,batch_id:input.batch_id,code});await sleep(60000);continue;}await rpc('memory_fail_x_batch_v1',{p_batch_id:input.batch_id,p_lease_token:input.lease_token,p_error_code:code});
+    const code=safeCode(e);if(['db_statement_timeout','db_transport_timeout','db_transport_unavailable','bulk_deadline_reached','x_publication_lease_changed'].includes(code)){log('lease_retry_after_expiry',{worker,batch_id:input.batch_id,code});await sleep(60000);continue;}await rpc('memory_fail_x_batch_v1',{p_batch_id:input.batch_id,p_lease_token:input.lease_token,p_error_code:code});
     failures++;log('failed',{worker,batch_id:input.batch_id,code});
     if(['model_usage_limit','model_authentication'].includes(code)){stopped=true;log('provider_stop',{code});return;}
     await sleep(Math.min(600000,30000*2**Math.min(failures,4)));
