@@ -72,6 +72,7 @@ for(const table of (process.env.X_BULK_SKIP_CAPTURE==='1'?[]:['tweet_logs','twee
  }
 }
 async function stage(){
+ if(process.env.X_BULK_STAGE_COMPLETE==='1'){stageDone=true;log('stage_previously_complete');return;}
  while(alive()&&!stopped){
   try{
    const rows=await fetchXMemorySnapshot(rpc,since,20000,{shouldStop:()=>stopped||!alive(),onPage:progress=>log('snapshot_page',progress),onTransient:async progress=>{const cooldown=Math.min(60000,2000*2**Math.min(progress.failures-1,5));log('snapshot_cooling',{...progress,cooldown_ms:cooldown});await sleep(cooldown);}});
