@@ -1,3 +1,4 @@
+import { xMemoryTransientCode } from "./lib-x-memory-transient.mjs";
 /** Collect all pages before grouping so page boundaries never split threads. */
 export async function fetchXMemorySnapshot(rpc, since, maxRows = 20000, options = {}) {
  const rows = []; let after = ''; let pageSize = 100; let consecutiveFailures = 0;
@@ -7,11 +8,11 @@ export async function fetchXMemorySnapshot(rpc, since, maxRows = 20000, options 
   let page;
   try { page = await rpc('memory_x_source_snapshot_page_v1', {p_since:since,p_after:after,p_limit:pageSize}); }
   catch (error) {
-   if (String(error.message).includes('57014')) {
+   if (xMemoryTransientCode(error)) {
     consecutiveFailures++;
     const canShrink=pageSize>10;
     pageSize=Math.max(10,Math.floor(pageSize/2));
-    if(options.onTransient){await options.onTransient({after,rows:rows.length,pageSize,failures:consecutiveFailures,code:'db_statement_timeout'});continue;}
+    if(options.onTransient){await options.onTransient({after,rows:rows.length,pageSize,failures:consecutiveFailures,code:xMemoryTransientCode(error)});continue;}
     if(canShrink)continue;
    }
    throw error;
