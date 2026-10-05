@@ -8,6 +8,7 @@
 - Uses the existing Gemini embedding model and existing X claim/publication/failure RPCs. Lease and input-hash checks remain intact; stale vectors are discarded.
 - Default: two extraction requests and two embedding requests in parallel. Database RPCs within the worker are serialized. Separate normal-worker claims remain protected by existing database leases.
 - At most 1,000 extraction claims and 10,000 embedding claims, with a 120-minute time budget. Extraction claims stop eight minutes before the deadline; embedding claims stop two minutes before it. In-flight jobs finish before exit.
+- Embedding provider HTTP 408/5xx and known transport timeouts/resets retry at most twice (2s/4s). Invalid input, auth and rate-limit failures do not retry automatically. Publication RPCs are never retried by this wrapper.
 - Known model failures, three consecutive extraction failures, or any embedding-batch failure stop new claims. Regular processing remains enabled to handle future work.
 - Logs contain counters, elapsed time and safe failure codes only. No original text, credentials, leases, input hashes or source identifiers are logged.
 
@@ -24,3 +25,7 @@ Run scripts/x-memory-backfill.mjs inside the existing nikechan-x container with 
 Main unit: nikechan-x-memory-backfill-20261005.service. Inspect with systemctl show and journalctl. A running unit is not proof of completion: require the finish event, zero fatal_code, and database queue readback.
 
 Stop with systemctl stop nikechan-x-memory-backfill-20261005.service. The normal nikechan-x-memory.timer is independent and remains enabled. This worker does not post to X or Discord.
+
+## First-run interruption and resume
+
+The first main run stored 160 summaries, 92 durable memories and 1,695 summary vectors before one embedding failure stopped it at 16:46 Europe/Warsaw. The failed summary embedded successfully in a read-only diagnostic probe; the original failure was logged generically, so its exact provider/publication cause is unknown. Phase and safe HTTP-status diagnostics were added together with bounded transient-provider retries. Existing data and failed-job retry schedules are preserved; no direct queue reset is performed.

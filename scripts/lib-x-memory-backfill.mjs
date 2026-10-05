@@ -2,6 +2,11 @@ import { characterEmbeddingModel, validateMemoryVector } from './lib-character-m
 import { xMemoryTransientCode } from './lib-x-memory-transient.mjs';
 
 export function safeBackfillError(error) {
+  const http = embeddingHttpStatus(error);
+  if (http === 429) return 'embedding_provider_rate_limit';
+  if (http === 401 || http === 403) return 'embedding_provider_authentication';
+  if (http >= 500 || http === 408) return 'embedding_provider_unavailable';
+  if (http) return 'embedding_provider_invalid_request';
   const transient = xMemoryTransientCode(error);
   if (transient) return transient;
   if (/^model_[a-z_]+$/.test(error?.code ?? '')) return error.code;
@@ -10,6 +15,28 @@ export function safeBackfillError(error) {
     if (error?.message === code) return code;
   }
   return 'backfill_operation_failed';
+}
+
+export function embeddingHttpStatus(error) {
+  return Number(String(error?.message ?? '').match(/^Gemini embedding failed: (\d{3}) /)?.[1]) || null;
+}
+
+// Retry only idempotent provider requests, never database publications. No auth,
+// invalid-input or rate-limit retry loop, and no raw response/body logging.
+export async function retryTransientEmbedding(embed, text, { sleep = ms => new Promise(r => setTimeout(r, ms)), observe = () => undefined } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await embed(text); }
+    catch (error) {
+      const status = embeddingHttpStatus(error);
+      const transport = error?.cause?.code ?? error?.code;
+      const transient = status === 408 || status >= 500 || (!status && (error?.name === 'TimeoutError'
+        || ['ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET'].includes(transport)));
+      if (!transient || attempt >= 2) throw error;
+      const delay = 2000 * 2 ** attempt;
+      observe({ stage: 'embedding_retry', code: safeBackfillError(error), http_status: status, retry: attempt + 1, delay_ms: delay });
+      await sleep(delay);
+    }
+  }
 }
 
 // Serialize database calls while provider requests run in a bounded parallel pool.
@@ -82,9 +109,12 @@ export async function runXMemoryBackfill({ rpc, extract, embed, maxExtract = 100
       await Promise.all(Array.from({ length: Math.min(embedConcurrency, jobs.length) }, async () => {
         while (index < jobs.length) {
           const job = jobs[index++];
+          let phase = 'validation';
           try {
             if (job.model !== characterEmbeddingModel) throw Error('unsupported_embedding_model');
-            const vector = validateMemoryVector(await embed(job.text));
+            phase = 'provider';
+            const vector = validateMemoryVector(await retryTransientEmbedding(embed, job.text, {sleep, observe}));
+            phase = 'publication';
             const ready = await rpc('memory_publish_x_batch_embedding_v1', { p_batch_id: job.batch_id,
               p_lease_token: job.lease_token, p_input_hash: job.input_hash, p_vector: JSON.stringify(vector) });
             if (ready === true) stats.embedded++; else stats.embed_discarded++;
@@ -92,7 +122,7 @@ export async function runXMemoryBackfill({ rpc, extract, embed, maxExtract = 100
             stats.embed_failed++;
             const code = safeBackfillError(error);
             await rpc('memory_fail_x_batch_embedding_v1', { p_batch_id: job.batch_id, p_lease_token: job.lease_token, p_error_code: code });
-            observe({ stage: 'embedding_failed', code });
+            observe({ stage: 'embedding_failed', code, phase, http_status: embeddingHttpStatus(error) });
           }
         }
       }));

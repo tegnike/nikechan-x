@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runXMemoryBackfill, serialRpc, safeBackfillError } from '../scripts/lib-x-memory-backfill.mjs';
+import { runXMemoryBackfill, serialRpc, safeBackfillError, retryTransientEmbedding } from '../scripts/lib-x-memory-backfill.mjs';
 import { characterEmbeddingModel } from '../scripts/lib-character-memory-embedding.mjs';
 const vector = Array(768).fill(0.1);
 const job = id => ({ batch_id: id, input_hash: 'hash', lease_token: 'lease' });
@@ -77,4 +77,29 @@ test('database calls remain serial even after failure', async () => {
   const rpc=serialRpc(async name => { active++; peak=Math.max(peak,active); await new Promise(r=>setTimeout(r,3)); active--; if(name==='fail')throw Error('synthetic'); return name; });
   const results=await Promise.allSettled([rpc('fail'),rpc('ok'),rpc('ok')]);
   assert.equal(peak,1); assert.equal(results[0].status,'rejected'); assert.equal(results[2].value,'ok');
+});
+
+
+test('transient embedding provider failure retries without leaking response or text', async () => {
+  let calls = 0; const delays = [], events = [];
+  const v = await retryTransientEmbedding(async () => { if (++calls < 3) throw Error('Gemini embedding failed: 503 sensitive response'); return vector; },
+    'sensitive original', {sleep: async ms => delays.push(ms), observe: e => events.push(e)});
+  assert.equal(v, vector); assert.equal(calls, 3); assert.deepEqual(delays, [2000,4000]);
+  assert.equal(JSON.stringify(events).includes('sensitive'), false);
+  assert.equal(events[0].http_status, 503);
+});
+
+test('auth, invalid input and quota failures are not automatically retried', async () => {
+  for (const status of [400,401,403,429]) {
+    let calls = 0;
+    await assert.rejects(retryTransientEmbedding(async () => { calls++; throw Error('Gemini embedding failed: '+status+' response'); },
+      'synthetic', {sleep: async () => {throw Error('unexpected retry');}}));
+    assert.equal(calls,1);
+  }
+});
+
+test('persistent transient embedding errors have a finite retry limit', async () => {
+  let calls = 0;
+  await assert.rejects(retryTransientEmbedding(async () => {calls++;throw Error('Gemini embedding failed: 500 response');}, 'synthetic', {sleep: async()=>undefined}));
+  assert.equal(calls,3);
 });
