@@ -4,6 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnv, SupabaseClient } from './lib-memory-search.mjs';
 import { createMemoryEmbedder } from './lib-character-memory-embedding.mjs';
+import { createXBatchEmbedder } from './lib-x-batch-embedding.mjs';
 import { extractXBatch } from './lib-x-memory-extraction.mjs';
 import { runXMemoryBackfill, serialRpc, safeBackfillError } from './lib-x-memory-backfill.mjs';
 
@@ -42,7 +43,7 @@ try {
   const settings = await client.fetchAll('memory_sync_state', { select: 'cursor', limit: 1, filters: ['source_key=eq.character-memory%3Ax-settings'] });
   if (settings[0]?.cursor?.processing_enabled !== true) throw Error('x_processing_disabled');
   const result = await runXMemoryBackfill({ rpc, extract: job => extractXBatch({ input: job, model }),
-    embed: createMemoryEmbedder(env.GEMINI_API_KEY), shouldStop: () => stopped, observe,
+    embed: createMemoryEmbedder(env.GEMINI_API_KEY), embedBatch: createXBatchEmbedder(env.GEMINI_API_KEY), shouldStop: () => stopped, observe,
     maxExtract: Number(env.X_BACKFILL_EXTRACT_LIMIT || 1000), maxEmbed: Number(env.X_BACKFILL_EMBED_LIMIT || 10000),
     extractConcurrency: Number(env.X_BACKFILL_EXTRACT_CONCURRENCY || 2), embedConcurrency: Number(env.X_BACKFILL_EMBED_CONCURRENCY || 2),
     maxRuntimeMs: Number(env.X_BACKFILL_MINUTES || 120) * 60000 });

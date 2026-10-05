@@ -29,3 +29,13 @@ Stop with systemctl stop nikechan-x-memory-backfill-20261005.service. The normal
 ## First-run interruption and resume
 
 The first main run stored 160 summaries, 92 durable memories and 1,695 summary vectors before one embedding failure stopped it at 16:46 Europe/Warsaw. The failed summary embedded successfully in a read-only diagnostic probe; the original failure was logged generically, so its exact provider/publication cause is unknown. Phase and safe HTTP-status diagnostics were added together with bounded transient-provider retries. Existing data and failed-job retry schedules are preserved; no direct queue reset is performed.
+
+## Request-rate handling
+
+The resumed single-input run stored another 181 summaries, 83 durable memories and 1,863 vectors before a provider HTTP 429 at 17:10 Europe/Warsaw. A provider HTTP 503 earlier in that run recovered via the bounded retry wrapper.
+
+The dedicated runner now sends up to eight summaries in one synchronous batchEmbedContents request, using the same embedding model/task/dimension. Returned vector count and dimensions are checked before publication, and input order maps to the original leases/hashes. A two-input synthetic API probe returned HTTP 200 with two 768-dimensional vectors. Only whole-batch requests opt into 429 cooldown (60s then 120s, at most two retries). Invalid input/auth errors and exhausted retries still stop new work. Original data and database functions are unchanged.
+
+Provider request ordering and method: https://ai.google.dev/api/embeddings . The second pilot/main completion must be checked independently of the earlier single-input pilot. Status polling now uses stable id order to prevent updates from moving rows between offset pages.
+
+Grouped-request pilot: 64 summary vectors stored in 32.654 seconds, zero failures/discards. Current main unit is nikechan-x-memory-backfill-grouped-20261005.service. Tests: 26 focused checks passed.

@@ -11,7 +11,7 @@ export function safeBackfillError(error) {
   if (transient) return transient;
   if (/^model_[a-z_]+$/.test(error?.code ?? '')) return error.code;
   if (/^model_[a-z_]+$/.test(error?.message ?? '')) return error.message;
-  for (const code of ['unsupported_embedding_model', 'invalid_embedding_vector', 'x_evidence_unavailable', 'invalid_embedding_claim', 'invalid_extraction_claim']) {
+  for (const code of ['unsupported_embedding_model', 'invalid_embedding_vector', 'x_evidence_unavailable', 'invalid_embedding_claim', 'invalid_extraction_claim', 'invalid_embedding_batch']) {
     if (error?.message === code) return code;
   }
   return 'backfill_operation_failed';
@@ -23,16 +23,17 @@ export function embeddingHttpStatus(error) {
 
 // Retry only idempotent provider requests, never database publications. No auth,
 // invalid-input or rate-limit retry loop, and no raw response/body logging.
-export async function retryTransientEmbedding(embed, text, { sleep = ms => new Promise(r => setTimeout(r, ms)), observe = () => undefined } = {}) {
+export async function retryTransientEmbedding(embed, text, { sleep = ms => new Promise(r => setTimeout(r, ms)), observe = () => undefined, allowRateLimit = false } = {}) {
   for (let attempt = 0; ; attempt++) {
     try { return await embed(text); }
     catch (error) {
       const status = embeddingHttpStatus(error);
       const transport = error?.cause?.code ?? error?.code;
-      const transient = status === 408 || status >= 500 || (!status && (error?.name === 'TimeoutError'
+      const rateLimit = allowRateLimit && status === 429;
+      const transient = rateLimit || status === 408 || status >= 500 || (!status && (error?.name === 'TimeoutError'
         || ['ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET'].includes(transport)));
       if (!transient || attempt >= 2) throw error;
-      const delay = 2000 * 2 ** attempt;
+      const delay = rateLimit ? 60000 * (attempt + 1) : 2000 * 2 ** attempt;
       observe({ stage: 'embedding_retry', code: safeBackfillError(error), http_status: status, retry: attempt + 1, delay_ms: delay });
       await sleep(delay);
     }
@@ -50,7 +51,7 @@ export function serialRpc(request) {
   };
 }
 
-export async function runXMemoryBackfill({ rpc, extract, embed, maxExtract = 1000, maxEmbed = 10000,
+export async function runXMemoryBackfill({ rpc, extract, embed, embedBatch, maxExtract = 1000, maxEmbed = 10000,
   extractConcurrency = 2, embedConcurrency = 2, maxRuntimeMs = 120 * 60000,
   now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), shouldStop = () => false,
   observe = () => undefined }) {
@@ -104,16 +105,31 @@ export async function runXMemoryBackfill({ rpc, extract, embed, maxExtract = 100
         await sleep(3000); continue;
       }
       stats.embed_claimed += jobs.length;
+      let batchVectors;
+      if (embedBatch) {
+        try {
+          if (jobs.some(j => j.model !== characterEmbeddingModel)) throw Error('unsupported_embedding_model');
+          batchVectors = await retryTransientEmbedding(embedBatch, jobs.map(j => j.text), {sleep, observe, allowRateLimit:true});
+          if (!Array.isArray(batchVectors) || batchVectors.length !== jobs.length) throw Error('invalid_embedding_batch');
+          batchVectors = batchVectors.map(validateMemoryVector);
+        } catch (error) {
+          const code = safeBackfillError(error);
+          for (const job of jobs) await rpc('memory_fail_x_batch_embedding_v1', {p_batch_id:job.batch_id,p_lease_token:job.lease_token,p_error_code:code});
+          stats.embed_failed += jobs.length; fatal = 'embedding_batch_failed';
+          observe({stage:'embedding_failed',code,phase:'batch_provider',http_status:embeddingHttpStatus(error),count:jobs.length});
+          pulse('embedding_progress'); break;
+        }
+      }
       let index = 0;
       const failedBefore = stats.embed_failed;
       await Promise.all(Array.from({ length: Math.min(embedConcurrency, jobs.length) }, async () => {
         while (index < jobs.length) {
-          const job = jobs[index++];
+          const jobIndex = index++; const job = jobs[jobIndex];
           let phase = 'validation';
           try {
             if (job.model !== characterEmbeddingModel) throw Error('unsupported_embedding_model');
             phase = 'provider';
-            const vector = validateMemoryVector(await retryTransientEmbedding(embed, job.text, {sleep, observe}));
+            const vector = batchVectors ? batchVectors[jobIndex] : validateMemoryVector(await retryTransientEmbedding(embed, job.text, {sleep, observe}));
             phase = 'publication';
             const ready = await rpc('memory_publish_x_batch_embedding_v1', { p_batch_id: job.batch_id,
               p_lease_token: job.lease_token, p_input_hash: job.input_hash, p_vector: JSON.stringify(vector) });
