@@ -6,9 +6,9 @@
 
 - Uses the existing X extraction rules, Codex OAuth adapter and configured model. No provider/model fallback.
 - Uses the existing Gemini embedding model and existing X claim/publication/failure RPCs. Lease and input-hash checks remain intact; stale vectors are discarded.
-- Default: two extraction requests and two embedding requests in parallel. Database RPCs within the worker are serialized. Separate normal-worker claims remain protected by existing database leases.
+- Default: two extraction requests in parallel and one grouped embedding request of up to eight texts at a time, with up to two publication lanes. Database RPCs within the worker are serialized. Separate normal-worker claims remain protected by existing database leases.
 - At most 1,000 extraction claims and 10,000 embedding claims, with a 120-minute time budget. Extraction claims stop eight minutes before the deadline; embedding claims stop two minutes before it. In-flight jobs finish before exit.
-- Embedding provider HTTP 408/5xx and known transport timeouts/resets retry at most twice (2s/4s). Invalid input, auth and rate-limit failures do not retry automatically. Publication RPCs are never retried by this wrapper.
+- Embedding provider HTTP 408/5xx and known transport timeouts/resets retry at most twice (2s/4s). Invalid input and auth failures do not retry. Whole-batch HTTP 429 uses the bounded cooldown below; individual embedding calls do not retry 429. Publication RPCs are never retried by this wrapper.
 - Known model failures, three consecutive extraction failures, or any embedding-batch failure stop new claims. Regular processing remains enabled to handle future work.
 - Logs contain counters, elapsed time and safe failure codes only. No original text, credentials, leases, input hashes or source identifiers are logged.
 
@@ -16,7 +16,7 @@ Environment overrides: X_BACKFILL_EXTRACT_LIMIT, X_BACKFILL_EMBED_LIMIT, X_BACKF
 
 ## Validation
 
-17 focused tests passed, including queue limits, source grouping, provider failure, stale publication, cancellation, deadline and RPC serialization. The production pilot finished in 48.153 seconds: eight summaries, four durable memories and 64 summary embeddings stored, zero failures/discards. The main run is separate; the pilot does not prove its completion.
+The initial 17 focused tests passed, including queue limits, source grouping, provider failure, stale publication, cancellation, deadline and RPC serialization. The production pilot finished in 48.153 seconds: eight summaries, four durable memories and 64 summary embeddings stored, zero failures/discards. The main run is separate; the pilot does not prove its completion.
 
 ## Run and inspect
 
@@ -38,4 +38,12 @@ The dedicated runner now sends up to eight summaries in one synchronous batchEmb
 
 Provider request ordering and method: https://ai.google.dev/api/embeddings . The second pilot/main completion must be checked independently of the earlier single-input pilot. Status polling now uses stable id order to prevent updates from moving rows between offset pages.
 
-Grouped-request pilot: 64 summary vectors stored in 32.654 seconds, zero failures/discards. Current main unit is nikechan-x-memory-backfill-grouped-20261005.service. Tests: 26 focused checks passed.
+Grouped-request pilot: 64 summary vectors stored in 32.653 seconds, zero failures/discards. Current main unit is nikechan-x-memory-backfill-grouped-20261005.service. Tests: 26 focused checks passed. The dedicated embedding queue contains X batch summaries; shared durable-memory embeddings continue through the existing workers.
+
+## Verified completion
+
+The grouped main run finished at 17:41:15 Europe/Warsaw on 2026-10-05 (systemd Result=success, ExecMainStatus=0). It stored 239 summaries, 90 durable memories and 2,460 summary vectors, with zero failures/discards. It did not stop because of cancellation, a time/item budget, or a fatal error.
+
+Across the three main runs: 580 summaries, 265 durable memories and 6,018 summary vectors were stored. These counters exclude the small pilots and the normal timer cycles.
+
+Post-exit database readback: zero pending/processing X batches and zero pending summary embeddings; all 16,275 ready batches have ready embeddings. Unreserved captured sources: zero. The pre-existing x_evidence_unavailable failure remains held separately; evidence checks were not bypassed. The normal 30-minute timer remains active and enabled. Shared durable-memory embedding work is separate from this dedicated summary queue. YouTube migrations remain unapplied.
