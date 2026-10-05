@@ -1037,6 +1037,9 @@ test('person profile keeps only checked note fields and who wrote them', async (
     guidance: { text: 'やさしく短めに', writtenBy: 'master' },
   });
   assert.equal(projectPersonProfile({ person: null, unresolved: true }), undefined);
+  assert.deepEqual(projectPersonProfile({ person: { profiles: [], recent_broadcasts: [
+    { title: 'ゲームセンター配信', date: '2026-10-04', comment_count: 12 }, { title: null, date: 'bad', comment_count: 1 },
+  ] } }), { recentStreamVisits: [{ title: 'ゲームセンター配信', date: '2026-10-04', commentCount: 12 }] });
   assert.equal(projectPersonProfile(null), undefined);
 });
 
