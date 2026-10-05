@@ -1024,3 +1024,40 @@ test('hashtag execute dry-run reports retweets without credentials', async () =>
     await rm(stateDir, { recursive: true, force: true });
   }
 });
+
+test('person profile keeps only checked note fields and who wrote them', async () => {
+  const { projectPersonProfile } = await import('../scripts/nikechan-x.mjs');
+  assert.deepEqual(projectPersonProfile({ person: { profiles: [
+    { field: 'memo', text: ' 動画制作をしている人 ', source: 'automatic', fingerprint: 'x' },
+    { field: 'guidance', text: 'やさしく短めに', source: 'master' },
+    { field: 'unknown', text: 'ignored', source: 'master' },
+    { field: 'context', text: '', source: 'automatic' },
+  ] } }), {
+    memo: { text: '動画制作をしている人', writtenBy: 'automatic' },
+    guidance: { text: 'やさしく短めに', writtenBy: 'master' },
+  });
+  assert.equal(projectPersonProfile({ person: null, unresolved: true }), undefined);
+  assert.equal(projectPersonProfile(null), undefined);
+});
+
+test('reply that pastes person notes is blocked, natural use is allowed', async () => {
+  const { guardPersonProfileCopy, normalizeMentionItems } = await import('../scripts/nikechan-x.mjs');
+  const personProfile = { memo: { text: '個人で3Dモデルを制作していて、最近はVRMの表情設定を細かく調整している。', writtenBy: 'automatic' },
+    guidance: { text: 'やさしく短めに話す', writtenBy: 'master' } };
+  assert.equal(guardPersonProfileCopy('表情の調整、進んでいるみたいでうれしいです！', personProfile).ok, true);
+  assert.equal(guardPersonProfileCopy('最近はVRMの表情設定を細かく調整しているんですよね！', personProfile).ok, false);
+  assert.equal(guardPersonProfileCopy('やさしく短めに話すね', personProfile).ok, true);
+  const candidate = { id: 'm1', tweetLogId: '1', postId: '10', username: 'alpha', displayName: 'Alpha',
+    nickname: 'アルファさん', type: 'reply', body: '表情できた！', personProfile };
+  const [copied, natural] = normalizeMentionItems([
+    { id: 'm1', tweetLogId: '1', replyAction: 'reply', quoteAction: 'skip', reason: '理由',
+      replyText: '最近はVRMの表情設定を細かく調整しているんですよね！', replyUsedPersonProfile: true },
+    { id: 'm1', tweetLogId: '1', replyAction: 'reply', quoteAction: 'skip', reason: '理由',
+      replyText: '表情の調整、進んでいるみたいでうれしいです！', replyUsedPersonProfile: true },
+  ], [candidate]);
+  assert.equal(copied.replyAction, 'skip');
+  assert.match(copied.guards.reply.errors.join(' '), /copies person memo text/);
+  assert.equal(natural.replyAction, 'reply');
+  assert.equal(natural.replyUsedPersonProfile, true);
+  assert.equal(natural.personProfile, undefined, 'notes stay in candidates, not in proposed items');
+});

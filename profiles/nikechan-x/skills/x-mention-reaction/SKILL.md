@@ -24,6 +24,11 @@ node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
 - マスター承認なしに返信・引用RTを実行しない
 - 候補生成前に必ず `mention-context` を読む
 - `mention-context.candidates[].personContext` は公開可能な投影だけとして扱う
+- `candidates[].personProfile` は投稿者についてのAIニケちゃん自身のメモ。`memo`=どんな人か、`context`=最近の出来事、`correction`=マスターの訂正（memo/contextより優先）、`guidance`=マスターが決めたこの人への接し方
+- `memo` / `context` は、投稿内容がその人の活動・取り組み・これまでのやり取りに関係する時だけ使う。挨拶、短い反応、ニュースへの質問、無関係な話題では持ち出さない。覚えていることを示すためだけの一言は入れない
+- 公開返信なので、メモを引用・列挙・要約しない。メモがあることも言わない。本名、居住地、勤務先、健康、家族、お金、他の場所での発言などの個人的な内容は、メモにあっても出さない。触れるとしても本人が知られていて自然だと思う一点を軽くだけにする
+- `guidance` はマスターの指示なので、話題に関係なく口調・距離感・呼び方に反映する
+- `personProfile` がある候補では、memo/context/correctionが文面に実際に影響した時だけ `replyUsedPersonProfile` / `quoteUsedPersonProfile` を `true` にする（guidanceだけなら `false`）。CLIはメモ本文を20文字以上そのまま写した文面を送信不可にする
 - 相手の呼称は、会話上自然な場合だけ `nickname` をそのまま使う
 - 返信・引用RTの冒頭を毎回 `nickname、` / `nicknameさん、` の形にしない。名前呼びは文中に自然に入る時だけ使う
 - `nickname` が空の場合は相手を名前で呼ばない
