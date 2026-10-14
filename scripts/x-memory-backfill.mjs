@@ -30,7 +30,7 @@ const model = async (_stage, instructions, input, schema) => {
       catch { fail(Object.assign(Error('model_execution_failed'), { code: 'model_execution_failed' })); }
     });
     child.stdin.on('error', () => undefined);
-    child.stdin.end(JSON.stringify({ instructions, input, schema, model: env.X_MEMORY_MODEL || 'gpt-5.5' }));
+    child.stdin.end(JSON.stringify({ instructions, input, schema, model: env.X_MEMORY_MODEL || 'gpt-6.1-sol' }));
   });
   if (result.error) throw Object.assign(Error(result.error), { code: result.error });
   return result;

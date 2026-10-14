@@ -14,7 +14,7 @@ def main():
     doc = json.load(sys.stdin)
     try:
         creds = resolve_codex_runtime_credentials()
-        payload = {"model": doc.get("model", "gpt-5.5"), "instructions": doc["instructions"],
+        payload = {"model": doc.get("model", "gpt-6.1-sol"), "instructions": doc["instructions"],
                    "input": [{"role": "user", "content": json.dumps(doc["input"], ensure_ascii=False)}],
                    "store": False, "stream": True, "tools": [],
                    "reasoning": {"effort": "medium"},

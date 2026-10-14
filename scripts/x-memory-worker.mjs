@@ -19,7 +19,7 @@ const model = async (_stage,instructions,input,schema) => {
   child.stdout.on('data',chunk=>{output+=chunk;if(output.length>1000000)child.kill('SIGKILL');});
   child.stderr.resume(); child.on('error',()=>{clearTimeout(timer);fail(Object.assign(Error('model_process_unavailable'),{code:'model_process_unavailable'}));});
   child.on('close',code=>{clearTimeout(timer);try{if(code!==0)throw Error();ok(JSON.parse(output));}catch{fail(Object.assign(Error('model_execution_failed'),{code:'model_execution_failed'}));}});
-  child.stdin.on('error',()=>{});child.stdin.end(JSON.stringify({instructions,input,schema,model:env.X_MEMORY_MODEL||'gpt-5.5'}));
+  child.stdin.on('error',()=>{});child.stdin.end(JSON.stringify({instructions,input,schema,model:env.X_MEMORY_MODEL||'gpt-6.1-sol'}));
  });
  if(result.error) throw Object.assign(Error(result.error),{code:result.error});return result;
 };

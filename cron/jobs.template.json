@@ -8,7 +8,7 @@
         "x-self-tweet"
       ],
       "skill": "x-self-tweet",
-      "model": "gpt-5.5",
+      "model": "gpt-6.1-sol",
       "provider": null,
       "base_url": null,
       "script": null,
@@ -101,7 +101,7 @@
         "x-mention-reaction"
       ],
       "skill": "x-mention-reaction",
-      "model": "gpt-5.5",
+      "model": "gpt-6.1-sol",
       "provider": null,
       "base_url": null,
       "script": null,
@@ -193,7 +193,7 @@
         "x-hashtag-reaction"
       ],
       "skill": "x-hashtag-reaction",
-      "model": "gpt-5.5",
+      "model": "gpt-6.1-sol",
       "provider": null,
       "base_url": null,
       "script": null,

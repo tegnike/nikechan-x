@@ -19,7 +19,7 @@ export function classifyModelFailure(diagnostic, timedOut = false) {
 
 // Each inference is ephemeral, tool-free, and sees only its explicit input.
 // Do not use run-external-llm.sh: its error path can notify Discord.
-export function createModel({ directory, model = 'gpt-5.5', effort = 'medium', timeoutMs = 180000 }) {
+export function createModel({ directory, model = 'gpt-6.1-sol', effort = 'medium', timeoutMs = 180000 }) {
   const pending = new Map();
   const invoke = async (stage, instructions, input, schema) => {
     const key = digest({ version: 1, stage, instructions, input, schema, model, effort });
