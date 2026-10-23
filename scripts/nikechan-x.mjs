@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createXMemoryTimeResolver } from './lib-x-memory-time.mjs';
 import { XCharacterMemory, memoryRpc, queryEmbedding } from './character-memory.mjs';
 import { createNewsReplyResolver, NEWS_REPLY_MAX_LENGTH } from './news-reply-context.mjs';
 import { resolveTwitterIdentity } from './twitter-identity.mjs';
@@ -41,6 +42,10 @@ const characterMemoryRpc = memoryRpc({ url: process.env.SUPABASE_URL, key: proce
 const xMemory = new XCharacterMemory({ mode: process.env.NIKECHAN_X_CHARACTER_MEMORY_MODE || 'off',
   embed: process.env.NIKECHAN_X_CHARACTER_MEMORY_EMBEDDING === 'true' && process.env.GEMINI_API_KEY ? queryEmbedding(process.env.GEMINI_API_KEY) : undefined,
   rpc: characterMemoryRpc,
+  resolveTime: process.env.NIKECHAN_X_MEMORY_TEMPORAL_ENABLED === 'false' ? undefined : createXMemoryTimeResolver({
+    hermesHome: X_PROFILE_DIR, timezone: process.env.NIKECHAN_MEMORY_TIMEZONE || 'Europe/Warsaw',
+    recentDays: Number(process.env.NIKECHAN_MEMORY_RECENT_DAYS || 7),
+  }),
   observe: event => console.error(JSON.stringify({ event: 'character_memory', ...event })),
 });
 

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-const allowed = new Set(['memory_recall_v2', 'memory_recall_v1', 'memory_validate_recall_v1', 'memory_delivery_v1', 'memory_recall_episodes_v1', 'memory_validate_episode_recall_v1', 'memory_person_context_x_v1']);
+const allowed = new Set(['memory_recall_temporal_v1', 'memory_recall_episodes_temporal_v1', 'memory_recall_unresolved_temporal_v1', 'memory_recall_v2', 'memory_recall_v1', 'memory_validate_recall_v1', 'memory_delivery_v1', 'memory_recall_episodes_v1', 'memory_validate_episode_recall_v1', 'memory_person_context_x_v1']);
 export function memoryRpc({ url, key, fetcher = fetch }) {
   return async (name, body) => {
     if (!allowed.has(name) || !url || !key) throw Error('character_memory_unavailable');

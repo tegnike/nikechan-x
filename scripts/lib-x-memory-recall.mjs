@@ -1,26 +1,31 @@
+import { memoryTimePrompt } from './lib-memory-time.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 const snapshotKey = value => JSON.stringify([value.snapshot?.epoch,value.snapshot?.policy_hash,value.snapshot?.mode]);
 const episodeId = id => /^(x|discord):/u.test(id);
 
 export class XCharacterMemory {
- constructor({mode='off',rpc,observe=()=>{},embed}) {
+ constructor({mode='off',rpc,observe=()=>{},embed,resolveTime}) {
   if(!['off','shadow','live'].includes(mode))throw Error('invalid_character_memory_mode');
-  Object.assign(this,{mode,rpc,observe,embed});
+  Object.assign(this,{mode,rpc,observe,embed,resolveTime});
  }
  async context(log) {
   if(this.mode==='off')return undefined;
   try {
    if(!/^[0-9]+$/u.test(String(log.user_id)))throw Error('unresolved_native_author');
-   let vector=null;if(this.embed)try{vector=JSON.stringify(await this.embed(String(log.body??'')));}catch{}
+   const time=this.resolveTime?await this.resolveTime(String(log.body??'')):{state:'none'};
+   const temporal=time.state==='resolved', unresolved=['ambiguous','unavailable'].includes(time.state);
+   let vector=null;if(this.embed&&!unresolved)try{vector=JSON.stringify(await this.embed(String(log.body??'')));}catch{}
    const run=async()=>{
     const base={p_runtime:'x-public',p_destination:'twitter:public',p_actor_platform:'twitter',p_actor_native_id:String(log.user_id),
-     p_query:String(log.body??''),p_turn_key:randomUUID(),p_attempt:1};
-    const items=await this.rpc(this.embed?'memory_recall_v2':'memory_recall_v1',{...base,...(this.embed?{p_query_embedding:vector}:{})});
-    const episodes=await this.rpc('memory_recall_episodes_v1',{...base,p_attempt:2,p_query_embedding:vector,
+     p_query:String(log.body??''),p_turn_key:randomUUID(),p_attempt:1,...(time.state!=='none'?{p_time:time}:{})};
+    const items=await this.rpc(unresolved?'memory_recall_unresolved_temporal_v1':temporal?'memory_recall_temporal_v1':this.embed?'memory_recall_v2':'memory_recall_v1',{...base,...(!unresolved&&this.embed?{p_query_embedding:vector}:{})});
+    const episodes=unresolved?await this.rpc('memory_recall_unresolved_temporal_v1',{...base,p_attempt:2}):await this.rpc(temporal?'memory_recall_episodes_temporal_v1':'memory_recall_episodes_v1',{...base,p_attempt:2,p_query_embedding:vector,
      p_root_source_key:log.conversation_id?`twitter:post:${log.conversation_id}`:log.original_tweet_id?`twitter:post:${log.original_tweet_id}`:null});
+    if(temporal&&[items,episodes].some(result=>!result.time_window||result.time_window.basis!==time.basis||result.time_window.mode!==time.mode||Date.parse(result.time_window.from)!==Date.parse(time.from)||Date.parse(result.time_window.to)!==Date.parse(time.to)||result.time_window.timezone!==time.timezone||result.time_window.eventFrom!==time.eventFrom||result.time_window.eventTo!==time.eventTo))throw Error('temporal_window_mismatch');
+    if(unresolved&&[items,episodes].some(result=>result.time_window?.state!==time.state||result.candidates?.length!==0))throw Error('temporal_window_mismatch');
     if(!items?.run_id||!episodes?.run_id||!Array.isArray(items.candidates)||!Array.isArray(episodes.candidates)
      ||items.snapshot?.mode!==this.mode||snapshotKey(items)!==snapshotKey(episodes))throw Error('character_memory_mode_or_epoch_mismatch');
-    return {...items,episode_run_id:episodes.run_id,episode_keys:episodes.candidates.map(e=>e.episode_key),
+    return {...items,...(time.state!=='none'?{time_query:time,time_context:memoryTimePrompt(time)}:{}),episode_run_id:episodes.run_id,episode_keys:episodes.candidates.map(e=>e.episode_key),
      candidates:[...items.candidates,...episodes.candidates.map(e=>({...e,item_id:e.episode_key,candidate_type:'episode'}))]};
    };
    const reply=await run(),quote=await run();

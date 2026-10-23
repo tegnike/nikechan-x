@@ -17,7 +17,7 @@ def main():
         payload = {"model": doc.get("model", "gpt-6.1-sol"), "instructions": doc["instructions"],
                    "input": [{"role": "user", "content": json.dumps(doc["input"], ensure_ascii=False)}],
                    "store": False, "stream": True, "tools": [],
-                   "reasoning": {"effort": "medium"},
+                   "reasoning": {"effort": doc.get("effort", "medium")},
                    "text": {"format": {"type": "json_schema", "name": "x_batch", "strict": True, "schema": doc["schema"]}}}
         with requests.post(creds["base_url"].rstrip("/") + "/responses",
                            headers={"Authorization": "Bearer " + creds["api_key"], "Content-Type": "application/json"},
