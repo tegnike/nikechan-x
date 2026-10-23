@@ -19,7 +19,7 @@ export class XCharacterMemory {
     const base={p_runtime:'x-public',p_destination:'twitter:public',p_actor_platform:'twitter',p_actor_native_id:String(log.user_id),
      p_query:String(log.body??''),p_turn_key:randomUUID(),p_attempt:1,...(time.state!=='none'?{p_time:time}:{})};
     const items=await this.rpc(unresolved?'memory_recall_unresolved_temporal_v1':temporal?'memory_recall_temporal_v1':this.embed?'memory_recall_v2':'memory_recall_v1',{...base,...(!unresolved&&this.embed?{p_query_embedding:vector}:{})});
-    const episodes=unresolved?await this.rpc('memory_recall_unresolved_temporal_v1',{...base,p_attempt:2}):await this.rpc(temporal?'memory_recall_episodes_temporal_v1':'memory_recall_episodes_v1',{...base,p_attempt:2,p_query_embedding:vector,
+    const episodes=unresolved?await this.rpc('memory_recall_unresolved_temporal_v1',{...base,p_attempt:2}):await this.rpc(temporal?'memory_recall_episodes_temporal_v1':'memory_recall_episodes_v2',{...base,p_attempt:2,p_query_embedding:vector,
      p_root_source_key:log.conversation_id?`twitter:post:${log.conversation_id}`:log.original_tweet_id?`twitter:post:${log.original_tweet_id}`:null});
     if(temporal&&[items,episodes].some(result=>!result.time_window||result.time_window.basis!==time.basis||result.time_window.mode!==time.mode||Date.parse(result.time_window.from)!==Date.parse(time.from)||Date.parse(result.time_window.to)!==Date.parse(time.to)||result.time_window.timezone!==time.timezone||result.time_window.eventFrom!==time.eventFrom||result.time_window.eventTo!==time.eventTo))throw Error('temporal_window_mismatch');
     if(unresolved&&[items,episodes].some(result=>result.time_window?.state!==time.state||result.candidates?.length!==0))throw Error('temporal_window_mismatch');

@@ -6,7 +6,7 @@ const fixture=(mode='live')=>{
  const rpc=async(name,body)=>{calls.push({name,body});const snapshot={epoch:1,policy_hash:'p',mode};
  if(name.startsWith('memory_validate'))return true;
  if(name==='memory_delivery_v1')throw Error('audit unavailable');
- return {run_id:`run-${calls.length}`,snapshot,status:'ok',candidates:name==='memory_recall_episodes_v1'?[{episode_key:'discord:one',summary:'話題'}]:[{item_id:'item-one',summary:'好み'}]};};
+ return {run_id:`run-${calls.length}`,snapshot,status:'ok',candidates:name==='memory_recall_episodes_v2'?[{episode_key:'discord:one',summary:'話題'}]:[{item_id:'item-one',summary:'好み'}]};};
  return {memory:new XCharacterMemory({mode,rpc,embed:async()=>{embeddings++;return [1];}}),calls,embeddings:()=>embeddings};
 };
 test('shadow queries both actions, with one embedding, without returning evidence',async()=>{
