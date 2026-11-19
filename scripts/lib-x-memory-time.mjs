@@ -5,7 +5,7 @@ import { resolveMemoryTime } from './lib-memory-time.mjs';
 // Uses the X profile's existing Codex OAuth helper. No new provider or credential.
 // The helper is a fixed trusted executable; post text is sent on stdin, never a shell command.
 export function createXMemoryTimeResolver({ python = 'python3', helper = fileURLToPath(new URL('./x-memory-codex-model.py', import.meta.url)),
-  model = 'gpt-6-luna', timezone = 'Europe/Warsaw', recentDays = 7, timeoutMs = 8000, hermesHome, generate } = {}) {
+  model = 'gpt-6-luna', timezone = 'Europe/Warsaw', recentDays = 7, timeoutMs = 15000, hermesHome, generate } = {}) {
   const request = generate ?? ((prompt, schema) => new Promise((resolve, reject) => {
     const child = spawn(python, [helper], { stdio: ['pipe', 'pipe', 'pipe'],
       ...(hermesHome ? { env: { ...process.env, HERMES_HOME: hermesHome } } : {}) });
