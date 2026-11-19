@@ -7,7 +7,7 @@ description: #AIニケちゃん タグの未チェックツイートを収集し
 
 ## 使うCLI
 
-HermesはRT/skip判断を担当し、X投稿境界・guard・記録はprofile内CLIに任せる。
+CodexはRT/skip判断を担当し、X投稿境界・guard・記録はprofile内CLIに任せる。
 
 ```bash
 node scripts/nikechan-x.mjs hashtag-context

@@ -7,7 +7,7 @@ description: Xの未チェックreply/quote/@メンションを収集し、返�
 
 ## 使うCLI
 
-Hermesは判断と文章生成を担当し、X投稿境界・pending state・guard・記録はprofile内CLIに任せる。
+Codexは判断と文章生成を担当し、X投稿境界・pending state・guard・記録はprofile内CLIに任せる。
 
 ```bash
 node scripts/nikechan-x.mjs mention-context
@@ -34,7 +34,7 @@ node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
 - 返信・引用RTの冒頭を毎回 `nickname、` / `nicknameさん、` の形にしない。名前呼びは文中に自然に入る時だけ使う
 - `nickname` が空の場合は相手を名前で呼ばない
 - `body` と `originalTweetText` は `mention-context.candidates[]` の原文をそのまま使い、要約・翻訳しない
-- `mediaContext` に photo / video / animated_gif がある候補は、返信案・引用案を作る前に必ず `vision_analyze` で実メディアを確認する
+- `mediaContext` に photo / video / animated_gif がある候補は、返信案・引用案を作る前に必ず実メディアを一時ファイルへ保存し、自分の目で確認する
 - 画像確認に失敗した場合、または具体的な視覚内容を説明できない場合は `replyAction=skip` / `quoteAction=skip` にする。周辺文脈だけで推測しない
 - 画像を踏まえて返信・引用する場合は、確認した具体的な視覚情報を `mediaEvidence` に入れる
 - `reason` / `replyText` / `quoteText` は必ず日本語で書く
@@ -42,10 +42,10 @@ node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
 - 不適切、文脈不足、内輪の運用品質指摘、反応不要なものは skip
 - Discordコマンド、チャンネルメンション、内部運用語、secret、private path は出さない
 - 候補生成後は必ず `mention-propose` に渡し、guardとpending保存を通す
-- cron実行時は `mention-propose` 後に `notify-mention-pending --thread` を実行し、最終応答は `[SILENT]` にする
-- `mention-context` の `candidates` が空なら、通知せず `[SILENT]` にする
+- 定期実行時は `mention-propose` 後に `notify-mention-pending --thread` を実行し、最終応答は実行結果の短い報告だけにする
+- `mention-context` の `candidates` が空なら、通知せず、何もせず終了する
 - `mention-context` の `candidates` がある場合は、既存pendingがあっても必ず新しい候補を作って `mention-propose` に渡す。CLIが古いpendingをsupersededとして退避する
-- 通常の新規cronでは、既存pendingの `threadId` / `notifiedAt` を理由に `notify-mention-pending --thread` を省略しない
+- 通常の定期実行では、既存pendingの `threadId` / `notifiedAt` を理由に `notify-mention-pending --thread` を省略しない
 
 ## 候補JSON
 
@@ -65,7 +65,7 @@ node scripts/nikechan-x.mjs mention-cancel --reason "<理由>"
       "originalTweetId": "元ツイートID。なければ省略",
       "originalTweetText": "元ツイート本文を原文コピー。なければ省略",
       "mediaContext": "候補にメディアがある場合はmention-contextの値をそのまま含める",
-      "mediaEvidence": "画像を踏まえる場合はvision_analyzeで確認した具体的な視覚情報",
+      "mediaEvidence": "画像を踏まえる場合は実メディアを見て確認した具体的な視覚情報",
       "replyAction": "reply",
       "quoteAction": "skip",
       "reason": "日本語の判断理由",
