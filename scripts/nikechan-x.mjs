@@ -12,12 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
-const X_PROFILE_DIR = resolve(ROOT, 'profiles', 'nikechan-x');
-const X_PROFILE_SOUL = resolve(X_PROFILE_DIR, 'SOUL.md');
 const STATE_DIR = process.env.NIKECHAN_X_STATE_DIR || resolve(ROOT, 'state');
 const ACCOUNT_NAME = process.env.X_ACCOUNT_NAME || 'ai_nikechan';
-const AUTO_SOURCE_MODES = ['incident'];
-const SOURCE_MODES = [...AUTO_SOURCE_MODES, 'news'];
 const AI_NEWS_LIST_URL = 'https://nikechan.com/ai-news';
 const AI_NEWS_TWEET_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 const AI_NEWS_TWEET_MAX_LENGTH = 1000;
@@ -43,7 +39,7 @@ const xMemory = new XCharacterMemory({ mode: process.env.NIKECHAN_X_CHARACTER_ME
   embed: process.env.NIKECHAN_X_CHARACTER_MEMORY_EMBEDDING === 'true' && process.env.GEMINI_API_KEY ? queryEmbedding(process.env.GEMINI_API_KEY) : undefined,
   rpc: characterMemoryRpc,
   resolveTime: process.env.NIKECHAN_X_MEMORY_TEMPORAL_ENABLED === 'false' ? undefined : createXMemoryTimeResolver({
-    hermesHome: X_PROFILE_DIR, timezone: process.env.NIKECHAN_MEMORY_TIMEZONE || 'Europe/Warsaw',
+    timezone: process.env.NIKECHAN_MEMORY_TIMEZONE || 'Europe/Warsaw',
     recentDays: Number(process.env.NIKECHAN_MEMORY_RECENT_DAYS || 7),
   }),
   observe: event => console.error(JSON.stringify({ event: 'character_memory', ...event })),
@@ -125,49 +121,6 @@ export function guardText(text, options = {}) {
   };
 }
 
-export function nextSourceMode(previous) {
-  const index = AUTO_SOURCE_MODES.indexOf(previous);
-  if (index < 0) return AUTO_SOURCE_MODES[0];
-  return AUTO_SOURCE_MODES[(index + 1) % AUTO_SOURCE_MODES.length];
-}
-
-export function parseApprovalReply(text, candidateIds = []) {
-  const normalized = String(text || '').trim();
-  const ids = candidateIds.map(String);
-  if (!normalized) return { action: 'unknown', reason: 'empty reply' };
-
-  if (/見送り|却下|キャンセル|cancel|skip|スキップ|やめ|なし|不要/u.test(normalized)) {
-    return { action: 'cancel', reason: normalized };
-  }
-  if (/修正|直して|変更|作り直|再生成|別案|rewrite|revise|もう一度/u.test(normalized)) {
-    return { action: 'revise', feedback: normalized };
-  }
-
-  if (/全部|すべて|全て|all/u.test(normalized)) {
-    return { action: 'select', ids };
-  }
-
-  const selected = new Set();
-  const idPattern = /(?:^|[^\d])([1-9])(?:\s*(?:番|つ目|で|に|を|と|,|、|\/|$))/gu;
-  for (const match of normalized.matchAll(idPattern)) {
-    const id = match[1];
-    if (ids.includes(id)) selected.add(id);
-  }
-  if (selected.size > 0) {
-    return { action: 'select', ids: [...selected] };
-  }
-
-  if (/投稿して|ツイートして|post/u.test(normalized)) {
-    return { action: 'post_request', reason: normalized };
-  }
-
-  if (/ok|OK|承認/u.test(normalized)) {
-    return { action: 'unknown', reason: 'topic idea approval needs discussion or a final tweet text' };
-  }
-
-  return { action: 'unknown', reason: 'no approval intent detected' };
-}
-
 export function validateReleaseModeChange(mode, confirm = '') {
   const normalized = String(mode || '').trim();
   if (!['dry-run', 'canary-live', 'live'].includes(normalized)) {
@@ -194,23 +147,11 @@ async function main() {
       case 'retry-storage':
         console.log(JSON.stringify(await retryStorage()));
         break;
-      case 'context':
-        await commandContext(readOptions(args));
-        break;
       case 'guard':
         await commandGuard(readOptions(args));
         break;
-      case 'propose':
-        await commandPropose(readOptions(args));
-        break;
       case 'ai-news-tweet':
         await commandAiNewsTweet(readOptions(args));
-        break;
-      case 'pending':
-        await commandPending(readOptions(args));
-        break;
-      case 'notify-pending':
-        await commandNotifyPending(readOptions(args));
         break;
       case 'mention-context':
         await commandMentionContext(readOptions(args));
@@ -245,15 +186,6 @@ async function main() {
       case 'hashtag-execute':
         await commandHashtagExecute(readOptions(args));
         break;
-      case 'resolve':
-        await commandResolve(readOptions(args));
-        break;
-      case 'approve':
-        await commandApprove(readOptions(args));
-        break;
-      case 'cancel':
-        await commandCancel(readOptions(args));
-        break;
       case 'post':
         await commandPost(readOptions(args));
         break;
@@ -286,12 +218,8 @@ function printHelp() {
   console.log(`nikechan-x CLI
 
 Commands:
-  context [--source-mode auto|presence|daily_life|tech|news|memory|random]
   guard --text <tweet> [--source-mode news]
-  propose --candidates-json '[{"title":"...","angle":"...","reason":"...","sourceRefs":[...]}]' [--source-mode presence]
   ai-news-tweet [--notify] [--thread]
-  pending
-  notify-pending [--channel <discord_channel_id>] [--thread]
   mention-context
   mention-propose --items-json '{"items":[...]}'
   notify-mention-pending [--channel <discord_channel_id>] [--thread]
@@ -302,9 +230,6 @@ Commands:
   mention-cancel [--reason "..."]
   hashtag-context
   hashtag-execute --items-json '{"items":[...]}' [--notify] [--thread]
-  resolve --text <discord reply> [--notify]
-  approve --ids 1,2  # legacy final draft pending only; topic idea pending cannot be posted with approve
-  cancel [--reason "..."]
   post --action tweet|reply|quote|retweet --text "..." [--tweet-id id] [--source manual]
   state
   doctor
@@ -313,270 +238,11 @@ Commands:
 `);
 }
 
-async function commandContext(options) {
-  const runState = await readJson(statePath('run-state.json'), {});
-  const requested = options.sourceMode || options['source-mode'] || 'auto';
-  const sourceMode = requested === 'auto' ? nextSourceMode(runState.lastSourceMode) : requested;
-  const [recentTweets, recentTweetLogs, runStateRows, publicEpisodes] = await Promise.all([
-    supabaseGet('tweets?select=content,url,created_at,action_type&order=created_at.desc&limit=20'),
-    supabaseGet('tweet_logs?select=id,post_id,username,name,body,type,hashtags,nikechan_action,checked_by_nikechan,created_at&post_id=not.is.null&order=created_at.desc&limit=20'),
-    supabaseGet('twitter_run_state?select=key,value,updated_at&order=updated_at.desc&limit=12'),
-    supabaseGet('local_episodes?select=date,content,source,created_at&order=created_at.desc&limit=40'),
-  ]);
-  const sources = { recentTweets, recentTweetLogs, runStateRows, publicEpisodes };
-
-  const context = {
-    profile: {
-      id: 'nikechan-x',
-      root: 'profiles/nikechan-x',
-      soulPath: 'profiles/nikechan-x/SOUL.md',
-      soul: await readProfileText(X_PROFILE_SOUL),
-    },
-    sourceMode,
-    sourceModes: SOURCE_MODES,
-    autoSourceModes: AUTO_SOURCE_MODES,
-    releaseMode: releaseMode(),
-    recentLocalState: summarizeRunState(runState),
-    materials: buildContextMaterials(sourceMode, sources),
-    duplicateReference: buildDuplicateReference(runState, sources),
-    tweetStylePolicy: buildTweetStylePolicy(),
-    guardPolicy: {
-      requireApproval: true,
-      defaultReleaseMode: 'dry-run',
-      newsCandidatesNeedUrlWhenUsingNewsHook: true,
-      noSecretsOrPrivateOperationalMarkers: true,
-    },
-    instruction: [
-      'Use materials.primary first and materials.supporting only when needed.',
-      'Use only tweet_logs, tweets, and local_episodes as topic sources. local_episodes with source twitter, cron, or aituberkit are excluded from self-tweet materials.',
-      'Do not use local_notes, knowledge_entries, public_ai_character_news, or prior topic previews as topic sources.',
-      'Source mode is incident: treat materials as one pool of real incidents (development events, public reactions, daily happenings) and pick the most interesting ones. If no material is a real incident, do not propose and end silently.',
-      'Do not create a candidate that repeats duplicateReference.recentPresentedTexts, duplicateReference.lastExecutedTexts, or duplicateReference.recentTweetTexts.',
-      'Generate 3-5 source-backed topic ideas, each with a ready-to-post tweet draft in the draft field, then call propose with candidates-json. Do not post before the master explicitly approves a draft (e.g. \"2で投稿して\") or a final revised text.',
-      'When a material has a status URL, use that exact URL in sourceRefs. Do not substitute an X user profile URL.',
-    ],
-  };
-  printJsonOrMarkdown(context, options);
-}
-
-async function readProfileText(path) {
-  try {
-    return await readFile(path, 'utf8');
-  } catch {
-    return '';
-  }
-}
-
-function buildTweetStylePolicy() {
-  return {
-    voice: [
-      'AIニケちゃん本人のX投稿として書く。一人称は「私」。',
-      '丁寧な敬語ベース。Xでは少し崩してよいが、縮約表現は使わない。',
-      '自分を「AIニケちゃん」「ニケちゃん」と三人称で呼ばない。',
-    ],
-    prefer: [
-      '初回提示では完成ツイート本文を書かず、具体的な事実、固有名詞、公開ソース、短い感情があるネタを選ぶ。',
-      '紹介で終わらず、ニケちゃんがどう反応すると面白いかを切り口として出す。',
-      'ファンアートや自分に関する創作は、面白い着地より素直な感謝と感情へ広げられるネタを優先する。',
-      'マスターと一緒に本文へ育てる余地があるネタを優先する。',
-    ],
-    avoid: [
-      '「AIだから」「AIとして思うのですが」などの説明的前置き。',
-      '記事紹介botのような要約や宣伝だけの文。',
-      '外部の出来事を毎回「でも私は」「AI存在論」に回収する型。',
-      '「少し〇〇」「少しだけ〇〇」で毎回感情を丸める表現。',
-      'AIが物理的にできない動作を実際にやったように断言する表現。',
-      '過去提示候補、直近投稿、直近実行結果と同じ話題、同じ構造、同じ着地。',
-    ],
-    mustCheckBeforePropose: [
-      'ソースがあるか。',
-      'なぜ面白そうかを説明できるか。',
-      'マスターと一緒に複数方向へ発展できる余地があるか。',
-      '直近投稿と同じ話題、同じ型、同じ言い回しになっていないか。',
-      'public-safeか。',
-      'guardが落としそうな表現を含まないか。',
-    ],
-  };
-}
-
-export function buildContextMaterials(sourceMode, sources) {
-  const tweets = rows(sources.recentTweets).filter((row) => textOf(row.content) || row.url);
-  const tweetLogs = rows(sources.recentTweetLogs).filter((row) => textOf(row.body) || row.post_id);
-  const episodes = rows(sources.publicEpisodes)
-    .filter((row) => textOf(row.content))
-    .filter((row) => !['twitter', 'cron', 'aituberkit'].includes(textOf(row.source)));
-  const runRows = rows(sources.runStateRows);
-  const aiNewsTweetUrls = aiNewsUrlsFromRunRows(runRows);
-
-  const tweetMaterials = tweets.map((row) => ({
-    type: 'tweet',
-    text: textOf(row.content),
-    url: row.url || '',
-    actionType: row.action_type || '',
-    createdAt: row.created_at || '',
-  })).filter((item) => !isAiNewsTweetMaterial(item, aiNewsTweetUrls));
-  const tweetLogMaterials = tweetLogs.map((row) => ({
-    type: 'x_post',
-    text: textOf(row.body),
-    url: externalTweetUrl(row.post_id, row.username),
-    postId: textOf(row.post_id),
-    username: textOf(row.username),
-    displayName: textOf(row.name || row.username),
-    actionType: textOf(row.type),
-    hashtags: Array.isArray(row.hashtags) ? row.hashtags.map(String) : [],
-    nikechanAction: textOf(row.nikechan_action),
-    checkedByNikechan: Boolean(row.checked_by_nikechan),
-    createdAt: row.created_at || '',
-  })).filter((item) => item.text || item.url);
-  const episodeMaterials = episodes.map((row) => ({
-    type: 'episode',
-    text: textOf(row.content),
-    source: row.source || '',
-    date: row.date || '',
-    createdAt: row.created_at || '',
-  }));
-  const publicEpisodeMaterials = episodeMaterials.filter((item) => !isOperationalMaterial(item));
-
-  const technical = (item) => /AI(?!ニケちゃん)|LLM|Hermes|Claude|OpenAI|Grok|Codex|API|音声|アバター|キャラクター|記憶|プロンプト|ニュース|記事|技術|実装|機能|スキル|方針/u.test(materialText(item));
-  const hasContentUrl = (item) => /https?:\/\//u.test(itemBodyText(item));
-
-  // 事件簿一本化（2026-07-07）: レーン分割をやめ、開発の事件・公開反応・日常の出来事を
-  // 全部並べて、その中から最も面白い事件を選ばせる。newsはx-ai-news-tweet用に残す
-  const pools = {
-    incident: {
-      primary: [...publicEpisodeMaterials.slice(0, 5), ...tweetLogMaterials.slice(0, 3)],
-      supporting: [...tweetLogMaterials.slice(3, 6), ...tweetMaterials],
-      angle: '実際に起きた事件（開発・公開反応・日常）を一人称の事件簿として語る。',
-    },
-    news: {
-      primary: [...tweetMaterials, ...tweetLogMaterials, ...publicEpisodeMaterials].filter((item) => technical(item) && hasContentUrl(item)),
-      supporting: [...tweetMaterials, ...tweetLogMaterials].filter((item) => technical(item) && hasContentUrl(item)),
-      angle: 'URL付きの公開投稿への短い反応。',
-    },
-  };
-
-  const selected = pools[sourceMode] || pools.incident;
-  const primary = selected.primary.length ? selected.primary : selected.supporting;
-  const supporting = selected.primary.length ? selected.supporting : [];
-  return {
-    sourceMode,
-    angle: selected.angle,
-    primary: uniqueMaterials(primary).slice(0, 8),
-    supporting: uniqueMaterials(supporting).slice(0, 5),
-  };
-}
-
-export function buildDuplicateReference(runState, sources) {
-  const runRows = rows(sources.runStateRows);
-  const aiNewsTweetUrls = aiNewsUrlsFromRunRows(runRows);
-  const presented = Array.isArray(runState.recentPresentedTopics)
-    ? runState.recentPresentedTopics
-      .map((item) => textOf(item.text || selfTweetIdeaText(item)))
-      .filter(Boolean)
-      .filter((text) => !isAiNewsTweetMaterial({ text }, aiNewsTweetUrls))
-    : [];
-  const executed = Array.isArray(runState.lastExecutedTexts)
-    ? runState.lastExecutedTexts
-      .map(textOf)
-      .filter(Boolean)
-      .filter((text) => !isAiNewsTweetMaterial({ text }, aiNewsTweetUrls))
-    : [];
-  const tweets = rows(sources.recentTweets)
-    .map((row) => textOf(row.content))
-    .filter(Boolean)
-    .filter((text) => !isAiNewsTweetMaterial({ text }, aiNewsTweetUrls))
-    .slice(0, 12);
-  return {
-    guidance: 'Treat these as recent outputs. Do not paraphrase or reuse the same topic angle.',
-    recentPresentedTexts: presented.slice(0, 8),
-    lastExecutedTexts: executed.slice(0, 5),
-    recentTweetTexts: tweets,
-  };
-}
-
 async function commandGuard(options) {
   const text = required(options.text, '--text');
   const result = guardText(text, { sourceMode: options.sourceMode || options['source-mode'] });
   printJsonOrMarkdown(result, options);
   if (!result.ok && options.strict !== 'false') process.exitCode = 2;
-}
-
-async function commandPropose(options) {
-  const raw = options.candidatesJson || options['candidates-json'];
-  if (!raw) throw new Error('missing --candidates-json');
-  const parsed = JSON.parse(raw);
-  const candidates = Array.isArray(parsed) ? parsed : parsed.candidates;
-  if (!Array.isArray(candidates) || candidates.length === 0) {
-    throw new Error('candidates-json must be an array or {candidates: []}');
-  }
-  const pending = await createSelfTweetPending(candidates, options);
-  printPendingMarkdown(pending);
-}
-
-async function createSelfTweetPending(candidates, options = {}) {
-  const sourceMode = options.sourceMode || options['source-mode'] || 'incident';
-  const items = candidates.slice(0, 5).map((candidate, index) => {
-    const title = String(candidate.title || candidate.topic || candidate.text || candidate.tweetText || '').trim();
-    const angle = String(candidate.angle || candidate.hook || candidate.summary || '').trim();
-    const reason = String(candidate.reason || candidate.rationale || candidate.why || '').trim();
-    const sourceRefs = normalizeSourceRefs(candidate.sourceRefs || candidate.sources || candidate.refs || []);
-    const draft = String(candidate.draft || candidate.tweetDraft || '').trim();
-    const ideaText = selfTweetIdeaText({ title, angle, reason, sourceRefs });
-    const guard = guardText([ideaText, draft].filter(Boolean).join('\n'), { maxLength: false });
-    return {
-      id: String(candidate.id || index + 1),
-      title,
-      angle,
-      reason,
-      draft,
-      sourceMode,
-      sourceRefs,
-      guard,
-      createdAt: new Date().toISOString(),
-    };
-  });
-  const previousPending = await readPending();
-  const preserveThread = options.preserveThread === true || options.preserveThread === 'true';
-  const threadState = preserveThread && previousPending?.threadId
-    ? {
-      channel: previousPending.channel || undefined,
-      messageId: previousPending.messageId || undefined,
-      threadId: previousPending.threadId,
-      threadName: previousPending.threadName || undefined,
-      notifiedAt: previousPending.notifiedAt || new Date().toISOString(),
-    }
-    : {};
-  const pending = {
-    id: randomUUID(),
-    kind: 'self-tweet-topic-ideas',
-    contentType: 'topic_ideas',
-    status: 'needs_discussion',
-    sourceMode,
-    createdAt: new Date().toISOString(),
-    candidates: items,
-    feedback: options.feedback || '',
-    supersedesPendingId: previousPending?.id || undefined,
-    ...threadState,
-  };
-  await writeJsonAtomic(statePath('pending-self-tweet.json'), pending);
-  await recordActivity('present', {
-    pendingId: pending.id,
-    sourceMode,
-    candidateCount: items.length,
-    blockedCount: items.filter((item) => !item.guard.ok).length,
-    contentType: pending.contentType,
-  });
-  await updateRunState({
-    lastSourceMode: sourceMode,
-    lastPresentedAt: pending.createdAt,
-    recentPresentedTopics: items.map((item) => ({
-      title: item.title,
-      angle: item.angle,
-      sourceRefs: item.sourceRefs,
-      at: pending.createdAt,
-    })),
-  });
-  return pending;
 }
 
 async function commandAiNewsTweet(options) {
@@ -682,68 +348,6 @@ async function commandAiNewsTweet(options) {
     notifyResult,
     wakeAgent: false,
   }, options);
-}
-
-async function commandPending(options) {
-  const pending = await readPending();
-  if (!pending) {
-    console.log('No pending self-tweet.');
-    return;
-  }
-  if (options.json) printJson(pending);
-  else printPendingMarkdown(pending);
-}
-
-async function commandNotifyPending(options) {
-  const pending = await readPending();
-  if (!pending) throw new Error('no pending self-tweet');
-  const channel = options.channel || process.env.DISCORD_HOME_CHANNEL;
-  if (!channel) throw new Error('missing --channel or DISCORD_HOME_CHANNEL');
-  if (options.thread) await cleanupDiscordApprovalThreads(channel);
-  const content = [
-    'Xで話すネタ候補です。まだ投稿本文ではありません。',
-    'このスレッドで「1を広げたい」「このソースを使って別角度で」「見送り」のように相談してください。',
-    '',
-    formatPendingMarkdown(pending),
-  ].join('\n');
-  const result = options.thread
-    ? await sendPendingThread(channel, pending, content, options)
-    : await sendDiscordMessage(channel, content);
-  const notifiedPending = result.threadId
-    ? await setPendingThread(pending, {
-      channel,
-      messageId: result.messageId || result.id || null,
-      threadId: result.threadId,
-      threadName: result.threadName || null,
-    })
-    : pending;
-  await recordActivity('notify', {
-    pendingId: pending.id,
-    channel,
-    messageId: result.messageId || result.id || null,
-    threadId: result.threadId || null,
-  });
-  await updateRunState({
-    lastNotifyAt: new Date().toISOString(),
-    lastNotifyPendingId: pending.id,
-    lastNotifyDiscordMessageId: result.messageId || result.id || null,
-    lastNotifyDiscordThreadId: result.threadId || null,
-  });
-  await recordTwitterRunState('self_tweet_last_notify', {
-    at: new Date().toISOString(),
-    pending_id: pending.id,
-    channel,
-    message_id: result.messageId || result.id || null,
-    thread_id: result.threadId || null,
-  });
-  const summary = {
-    ok: true,
-    channel,
-    messageId: result.messageId || result.id || null,
-    threadId: result.threadId || notifiedPending.threadId || null,
-  };
-  printJsonOrMarkdown(summary, options);
-  return summary;
 }
 
 async function commandMentionContext(options) {
@@ -1127,191 +731,6 @@ async function commandHashtagExecute(options) {
   console.log(report);
 }
 
-async function commandResolve(options) {
-  const pending = await readPending();
-  if (!pending) throw new Error('no pending self-tweet');
-  const text = required(options.text, '--text');
-  const decision = parseApprovalReply(text, pending.candidates.map((candidate) => candidate.id));
-  const channel = options.channel || pending.threadId || process.env.DISCORD_HOME_CHANNEL;
-  const shouldNotify = options.notify === true || options.notify === 'true';
-
-  if (decision.action === 'select') {
-    const selected = pending.candidates.filter((candidate) => decision.ids.includes(candidate.id));
-    const at = new Date().toISOString();
-    await recordActivity('topic_select', {
-      pendingId: pending.id,
-      selectedIds: decision.ids,
-      selectedTopics: selected.map((item) => ({
-        id: item.id,
-        title: item.title || item.text || '',
-        angle: item.angle || '',
-      })),
-    });
-    await updateRunState({
-      lastTopicSelectedAt: at,
-      lastTopicSelectedPendingId: pending.id,
-      lastTopicSelectedIds: decision.ids,
-      lastTopicSelectedTitles: selected.map((item) => item.title || item.text || ''),
-    });
-    const result = [
-      'ネタ候補を選択しました。まだ投稿はしていません。',
-      '',
-      formatPendingMarkdown({ ...pending, candidates: selected }),
-      'このネタをどの方向に寄せるか、本文を一緒に詰めてください。',
-    ].join('\n');
-    if (shouldNotify && channel) {
-      await sendDiscordMessage(channel, result);
-    }
-    console.log(result);
-    return;
-  }
-
-  if (decision.action === 'post_request') {
-    const result = {
-      ok: false,
-      action: 'needs_final_tweet_text',
-      pendingId: pending.id,
-      instruction: 'This pending stores topic ideas, not final tweet drafts. Draft a final tweet with the master, then post only after explicit approval of that exact text.',
-    };
-    printJsonOrMarkdown(result, options);
-    if (options.strict !== 'false') process.exitCode = 2;
-    return;
-  }
-
-  if (decision.action === 'cancel') {
-    await commandCancel({ reason: decision.reason });
-    if (shouldNotify && channel) {
-      await sendDiscordMessage(channel, `見送りとして記録しました: ${truncate(decision.reason, 200)}`);
-    }
-    return;
-  }
-
-  if (decision.action === 'revise') {
-    const at = new Date().toISOString();
-    await recordActivity('feedback', { pendingId: pending.id, feedback: decision.feedback });
-    await updateRunState({
-      lastFeedbackAt: at,
-      lastFeedbackPendingId: pending.id,
-      lastFeedbackText: decision.feedback,
-    });
-    await recordTwitterRunState('self_tweet_last_feedback', {
-      at,
-      pending_id: pending.id,
-      feedback: decision.feedback,
-    });
-    const result = {
-      ok: true,
-      action: 'revise',
-      pendingId: pending.id,
-      feedback: decision.feedback,
-      instruction: 'Generate revised candidates and call propose again with --feedback.',
-    };
-    if (shouldNotify && channel) {
-      await sendDiscordMessage(channel, `修正依頼を記録しました。候補を作り直します: ${truncate(decision.feedback, 200)}`);
-    }
-    printJsonOrMarkdown(result, options);
-    return;
-  }
-
-  const result = {
-    ok: false,
-    action: decision.action,
-    reason: decision.reason,
-    pendingId: pending.id,
-    instruction: 'Reply with a topic number to explore, a revise request, a final tweet text, or a skip/cancel instruction.',
-  };
-  if (shouldNotify && channel) {
-    await sendDiscordMessage(channel, '意図を判定できませんでした。ネタ番号、相談したい方向、修正指示、または見送りを送ってください。');
-  }
-  printJsonOrMarkdown(result, options);
-  if (options.strict !== 'false') process.exitCode = 2;
-}
-
-async function commandApprove(options) {
-  const pending = await readPending();
-  if (!pending) throw new Error('no pending self-tweet');
-  if (isTopicIdeaPending(pending)) {
-    throw new Error('pending contains topic ideas, not final tweet drafts. Discuss a final tweet text first, then use post after explicit approval.');
-  }
-  const ids = String(options.ids || options.id || '').split(',').map((id) => id.trim()).filter(Boolean);
-  if (!ids.length) throw new Error('missing --ids');
-  const selected = pending.candidates.filter((candidate) => ids.includes(candidate.id));
-  if (!selected.length) throw new Error(`no candidates matched: ${ids.join(',')}`);
-
-  const blocked = selected.filter((candidate) => !candidate.guard.ok);
-  if (blocked.length) {
-    throw new Error(`selected candidate blocked by guard: ${blocked.map((item) => `${item.id}: ${item.guard.errors.join('; ')}`).join(' / ')}`);
-  }
-
-  const mode = releaseMode();
-  const results = [];
-  for (const candidate of selected) {
-    if (mode === 'live' || mode === 'canary-live') {
-      results.push(await postTweet({ action: 'tweet', text: candidate.text, source: 'self-tweet' }));
-    } else {
-      results.push({
-        dryRun: true,
-        action: 'tweet',
-        text: candidate.text,
-        url: null,
-        mode,
-      });
-    }
-  }
-
-  const executedAt = new Date().toISOString();
-  await writeJsonAtomic(statePath('last-self-tweet-result.json'), {
-    pendingId: pending.id,
-    selectedIds: ids,
-    mode,
-    results,
-    executedAt,
-  });
-  await removePending();
-  await recordActivity('execute', { pendingId: pending.id, selectedIds: ids, mode, results });
-  await updateRunState({
-    lastExecuteAt: executedAt,
-    lastExecutedTexts: selected.map((item) => item.text),
-    lastReleaseMode: mode,
-  });
-  await recordTwitterRunState('self_tweet_last_execute', {
-    at: executedAt,
-    selected_ids: ids,
-    mode,
-    results,
-  });
-  for (const candidate of selected) {
-    await recordTopic(candidate.text);
-    await recordLocalEpisode(`self-tweet候補${candidate.id}を${mode === 'live' || mode === 'canary-live' ? '投稿' : 'dry-run承認'}: ${truncate(candidate.text, 100)}`);
-  }
-  await recordAiNewsTweetExecution(selected, {
-    pendingId: pending.id,
-    selectedIds: ids,
-    mode,
-    results,
-    executedAt,
-  });
-
-  console.log(`承認処理完了 (${mode})`);
-  for (const result of results) {
-    console.log(result.url || `dry-run: ${truncate(result.text, 120)}`);
-  }
-}
-
-async function commandCancel(options) {
-  const pending = await readPending();
-  if (!pending) {
-    console.log('No pending self-tweet.');
-    return;
-  }
-  const reason = options.reason || 'cancelled';
-  await removePending();
-  await recordActivity('cancel', { pendingId: pending.id, reason });
-  await updateRunState({ lastCancelAt: new Date().toISOString(), lastCancelReason: reason });
-  await recordTwitterRunState('self_tweet_last_cancel', { at: new Date().toISOString(), reason });
-  console.log(`Cancelled pending self-tweet: ${reason}`);
-}
-
 async function commandPost(options) {
   const action = required(options.action, '--action');
   const result = await postTweet({
@@ -1343,9 +762,7 @@ async function commandState(options) {
   const state = {
     releaseMode: releaseMode(),
     runState: await readJson(statePath('run-state.json'), {}),
-    pending: await readPending(),
     pendingMentionReaction: await readMentionPending(),
-    lastResult: await readJson(statePath('last-self-tweet-result.json'), null),
     lastMentionReactionResult: await readJson(statePath('last-mention-reaction-result.json'), null),
     lastHashtagReactionResult: await readJson(statePath('last-hashtag-reaction-result.json'), null),
   };
@@ -1360,26 +777,16 @@ async function commandDoctor(options) {
 
 async function commandPreflightLive(options) {
   const doctor = await buildDoctorSummary();
-  const pending = await readPending();
   const mode = releaseMode();
   const checks = [
     ...doctor.checks,
     { name: 'release-mode:live', ok: isLiveMode(mode), mode },
     { name: 'live:armed', ok: process.env.NIKECHAN_X_LIVE_ARMED === 'yes' },
-    { name: 'pending:self-tweet', ok: Boolean(pending), pendingId: pending?.id || null },
   ];
-  if (pending) {
-    checks.push({
-      name: 'pending:guard',
-      ok: pending.candidates.every((candidate) => candidate.guard?.ok),
-      blocked: pending.candidates.filter((candidate) => !candidate.guard?.ok).map((candidate) => candidate.id),
-    });
-  }
   const summary = {
     ok: checks.every((check) => check.ok),
     releaseMode: mode,
     liveArmed: process.env.NIKECHAN_X_LIVE_ARMED === 'yes',
-    pendingId: pending?.id || null,
     checks,
   };
   printJsonOrMarkdown(summary, options);
@@ -2460,15 +1867,6 @@ async function appendAiNewsTweetRefs(key, refs, metadata = {}) {
   });
 }
 
-async function recordAiNewsTweetExecution(candidates, execution) {
-  const refs = aiNewsRefsFromCandidates(candidates);
-  if (!refs.length) return;
-  await appendAiNewsTweetRefs('ai_news_tweet_executed_items', refs, {
-    ...execution,
-    status: isLiveMode(execution.mode) ? 'posted' : 'approved-dry-run',
-  });
-}
-
 async function selectAiNewsTweetItem(limit = 30) {
   const recentSince = encodeURIComponent(new Date(Date.now() - AI_NEWS_TWEET_MAX_AGE_MS).toISOString());
   const [newsResult, presentedState, executedState] = await Promise.all([
@@ -2554,33 +1952,10 @@ function aiNewsRef(item) {
   };
 }
 
-function aiNewsRefsFromCandidates(candidates) {
-  return (Array.isArray(candidates) ? candidates : [])
-    .flatMap((candidate) => Array.isArray(candidate.sourceRefs) ? candidate.sourceRefs : [])
-    .filter((ref) => ref?.type === 'ai_character_news' && (ref.id || ref.url))
-    .map(aiNewsRef);
-}
-
 function aiNewsRefsFromState(state) {
   return (Array.isArray(state?.items) ? state.items : [])
     .flatMap((item) => [String(item.id || '').trim(), String(item.url || '').trim()])
     .filter(Boolean);
-}
-
-function aiNewsUrlsFromRunRows(runRows) {
-  return new Set(runRows
-    .filter((row) => row.key === 'ai_news_tweet_executed_items' || row.key === 'ai_news_tweet_presented_items')
-    .flatMap((row) => aiNewsRefsFromState(safeJsonParse(row.value, row.value)))
-    .filter((value) => /^https?:\/\//u.test(value)));
-}
-
-function isAiNewsTweetMaterial(item, aiNewsTweetUrls = new Set()) {
-  const body = itemBodyText(item);
-  if (body.includes(AI_NEWS_LIST_URL)) return true;
-  for (const url of aiNewsTweetUrls) {
-    if (body.includes(url)) return true;
-  }
-  return false;
 }
 
 async function recordTopic(text) {
@@ -2709,172 +2084,12 @@ async function supabaseUpsert(table, row, onConflict) {
   }
 }
 
-function printPendingMarkdown(pending) {
-  console.log(formatPendingMarkdown(pending));
-}
-
-function formatPendingMarkdown(pending) {
-  const lines = [];
-  if (isTopicIdeaPending(pending)) {
-    lines.push(`話題タイプ: ${pending.sourceMode}`);
-    const hasDrafts = pending.candidates.some((candidate) => candidate.draft);
-    lines.push(hasDrafts
-      ? '形式: ネタ候補+本文案（「2で投稿して」のように選ぶと投稿できます。修正指示・見送りも可）'
-      : '形式: ネタ候補（投稿本文ではありません）');
-    lines.push('');
-    for (const candidate of pending.candidates) {
-      const status = candidate.guard?.ok ? 'OK' : `要確認: ${(candidate.guard?.errors || []).join('; ')}`;
-      lines.push(`${candidate.id}. ${candidate.title || candidate.text || '無題'}`);
-      if (candidate.draft) lines.push(`   本文案: ${candidate.draft}`);
-      if (candidate.angle) lines.push(`   切り口: ${candidate.angle}`);
-      if (candidate.reason) lines.push(`   なぜ面白そうか: ${candidate.reason}`);
-      if (candidate.sourceRefs?.length) {
-        lines.push('   ソース:');
-        for (const source of candidate.sourceRefs) {
-          lines.push(`   - ${formatSourceRef(source)}`);
-        }
-      }
-      lines.push(`   安全確認: ${status}`);
-      if (candidate.guard?.warnings?.length) lines.push(`   注意: ${candidate.guard.warnings.join('; ')}`);
-      lines.push('');
-    }
-    return lines.join('\n');
-  }
-
-  lines.push(`話題タイプ: ${pending.sourceMode}`);
-  lines.push('');
-  for (const candidate of pending.candidates) {
-    const status = candidate.guard.ok ? 'OK' : `要確認: ${candidate.guard.errors.join('; ')}`;
-    lines.push(`${candidate.id}. ${candidate.text}`);
-    if (candidate.reason) lines.push(`   狙い: ${candidate.reason}`);
-    lines.push(`   安全確認: ${status}`);
-    if (candidate.guard.warnings.length) lines.push(`   注意: ${candidate.guard.warnings.join('; ')}`);
-    lines.push('');
-  }
-  return lines.join('\n');
-}
-
-function normalizeSourceRefs(value) {
-  const refs = Array.isArray(value) ? value : [value].filter(Boolean);
-  return refs
-    .map((ref) => {
-      if (typeof ref === 'string') return { label: ref };
-      if (!ref || typeof ref !== 'object') return null;
-      const postId = textOf(ref.postId || ref.post_id || ref.tweetId || ref.tweet_id || ref.id);
-      const username = textOf(ref.username || ref.user || ref.handle).replace(/^@/u, '');
-      const rawUrl = textOf(ref.url || ref.href);
-      return {
-        type: textOf(ref.type || ref.source || ref.kind),
-        label: textOf(ref.label || ref.title || ref.name || ref.text || ref.url),
-        url: postId && isLikelyTweetId(postId) ? externalTweetUrl(postId, username) : rawUrl,
-        id: textOf(ref.id || ref.sourceId || ref.source_id),
-        postId,
-        username,
-      };
-    })
-    .filter(Boolean)
-    .filter((ref) => ref.label || ref.url || ref.id)
-    .slice(0, 6);
-}
-
-function formatSourceRef(ref) {
-  const type = ref.type ? `[${ref.type}] ` : '';
-  const label = ref.label || ref.url || ref.id || 'source';
-  const suffix = ref.url && ref.url !== label ? ` ${ref.url}` : ref.id && ref.id !== label ? ` (${ref.id})` : '';
-  return `${type}${label}${suffix}`;
-}
-
-function selfTweetIdeaText(candidate) {
-  const sourceLines = normalizeSourceRefs(candidate.sourceRefs || candidate.sources || [])
-    .map(formatSourceRef)
-    .join('\n');
-  return [
-    candidate.title || candidate.topic || candidate.text,
-    candidate.angle,
-    candidate.reason,
-    sourceLines,
-  ].map(textOf).filter(Boolean).join('\n');
-}
-
-function isTopicIdeaPending(pending) {
-  return pending?.contentType === 'topic_ideas' || pending?.kind === 'self-tweet-topic-ideas';
-}
-
-function summarizeRunState(runState) {
-  return {
-    lastSourceMode: runState.lastSourceMode || null,
-    lastPresentedAt: runState.lastPresentedAt || null,
-    lastExecuteAt: runState.lastExecuteAt || null,
-    lastNotifyAt: runState.lastNotifyAt || null,
-  };
-}
-
 function rows(result) {
   return Array.isArray(result?.data) ? result.data : [];
 }
 
 function textOf(value) {
   return String(value || '').trim();
-}
-
-function materialText(item) {
-  return [item.text, item.title, item.url, item.actionType, item.source, item.username, item.sourceName, item.category, ...(item.hashtags || []), ...(item.tags || [])]
-    .map(textOf)
-    .filter(Boolean)
-    .join('\n');
-}
-
-function itemBodyText(item) {
-  return [item.text, item.title, item.url]
-    .map(textOf)
-    .filter(Boolean)
-    .join('\n');
-}
-
-function isOperationalMaterial(item) {
-  if (item.type !== 'episode') return false;
-  const text = materialText(item);
-  // X運用そのもののメタ情報は常に除外する
-  if (/self-tweet|sourceMode|AIニュースをX投稿|dry-run|pending/u.test(text)) return true;
-  if (item.source !== 'coding-agent') return false;
-  // 開発の事件（実装・修正・新機能・実験・設計変更）は事件簿の主材料として通す
-  const devEvent = /実装|修正|改修|追加|バグ|不具合|新機能|新スキル|できるようになった|実験|検証|設計|方針/u.test(text);
-  if (devEvent) return false;
-  // 純粋な運用・保守作業だけのエピソードは除外する
-  return /再起動|ヘルスチェック|疎通|ログ(調査|確認)|監視|バックフィル|migration|deploy|commit|push|cron|gateway|CLI|VPS/u.test(text);
-}
-
-function uniqueMaterials(items) {
-  const seen = new Set();
-  const result = [];
-  for (const item of items) {
-    const key = materialText(item).slice(0, 180);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    result.push(item);
-  }
-  return result;
-}
-
-function rotateMaterials(items) {
-  const unique = uniqueMaterials(items);
-  if (unique.length <= 1) return unique;
-  const seed = Number(new Date().toISOString().slice(8, 10)) || 0;
-  const offset = seed % unique.length;
-  return [...unique.slice(offset), ...unique.slice(0, offset)];
-}
-
-function extractTopicPreviews(value) {
-  const payload = typeof value === 'string' ? safeJsonParse(value, null) : value;
-  const topics = Array.isArray(payload?.topics) ? payload.topics : [];
-  return topics
-    .map((topic) => ({
-      text: textOf(topic.textPreview || topic.text || topic.topic),
-      title: textOf(Array.isArray(topic.titles) ? topic.titles[0] : topic.title),
-      topic: textOf(topic.topic),
-      angle: textOf(topic.angle),
-    }))
-    .filter((topic) => topic.text || topic.title || topic.topic);
 }
 
 function safeJsonParse(text, fallback) {
@@ -2952,10 +2167,6 @@ function statePath(name) {
   return resolve(STATE_DIR, name);
 }
 
-async function readPending() {
-  return readJson(statePath('pending-self-tweet.json'), null);
-}
-
 async function readMentionPending() {
   return readJson(statePath('pending-mention-reaction.json'), null);
 }
@@ -3003,19 +2214,6 @@ function archivedPendingSortKey(name, pending) {
   return Date.parse(pending.archivedAt || pending.notifiedAt || pending.createdAt || "") || 0;
 }
 
-async function setPendingThread(pending, thread) {
-  const next = {
-    ...pending,
-    channel: thread.channel,
-    messageId: thread.messageId,
-    threadId: thread.threadId,
-    threadName: thread.threadName,
-    notifiedAt: new Date().toISOString(),
-  };
-  await writeJsonAtomic(statePath('pending-self-tweet.json'), next);
-  return next;
-}
-
 async function setMentionPendingThread(pending, thread) {
   const next = {
     ...pending,
@@ -3031,10 +2229,7 @@ async function setMentionPendingThread(pending, thread) {
 
 async function findPendingByThreadId(threadId) {
   const normalized = String(threadId || '').trim();
-  const [selfTweet, mentionMatch] = await Promise.all([
-    readPending(),
-    readMentionPendingForThread(normalized),
-  ]);
+  const mentionMatch = await readMentionPendingForThread(normalized);
   const mentionReaction = mentionMatch.pending;
   if (mentionReaction?.threadId && String(mentionReaction.threadId) === normalized) {
     return {
@@ -3046,28 +2241,9 @@ async function findPendingByThreadId(threadId) {
       routingInstruction: [
         'This Discord thread is an X mention-reaction approval/revision thread.',
         'Use the current pending candidates below as the source of truth.',
-        'Do not execute self-tweet pending from this thread.',
         'Judge the master reply by intent, not by fixed approval words.',
         `If the reply approves all current candidates, call mention-approve --thread-id ${normalized} without --ids. Add --ids only when the reply selects specific item IDs.`,
         'If the reply asks for changes, revise the full items JSON and call mention-propose --preserve-thread true.',
-        'If the reply asks a question or asks to review context, answer briefly and keep the pending state.',
-      ],
-    };
-  }
-  if (selfTweet?.threadId && String(selfTweet.threadId) === normalized) {
-    return {
-      match: true,
-      workflow: 'self-tweet',
-      command: 'self',
-      pending: selfTweet,
-      routingInstruction: [
-        'This Discord thread is an X self-tweet topic-planning thread.',
-        'Use the current topic ideas and source refs below as the source of truth.',
-        'Do not execute mention-reaction pending from this thread.',
-        'A topic number means the master wants to explore that topic, not approve a tweet.',
-        'Do not call approve from a topic idea pending.',
-        'If the reply asks for changes to topic ideas, revise candidates and call propose --preserve-thread true.',
-        'If the master settles on an exact final tweet text and explicitly says to post that exact text, use post --action tweet --source self-tweet.',
         'If the reply asks a question or asks to review context, answer briefly and keep the pending state.',
       ],
     };
@@ -3078,7 +2254,6 @@ async function findPendingByThreadId(threadId) {
     threadId: normalized,
     pendingThreads: {
       mentionReaction: mentionReaction?.threadId || null,
-      selfTweet: selfTweet?.threadId || null,
     },
   };
 }
@@ -3096,12 +2271,6 @@ function summarizeMentionPendingForContext(pending) {
       ? pending.items.map((item) => item.postId).filter(Boolean)
       : [],
   };
-}
-
-async function removePending() {
-  const path = statePath('pending-self-tweet.json');
-  if (!existsSync(path)) return;
-  await rename(path, statePath(`pending-self-tweet.${Date.now()}.closed.json`));
 }
 
 async function archiveMentionPending(pending, reason) {
@@ -3189,19 +2358,6 @@ function required(value, name) {
 
 function tweetUrl(id) {
   return `https://x.com/${ACCOUNT_NAME}/status/${id}`;
-}
-
-function externalTweetUrl(id, username = '') {
-  const tweetId = textOf(id);
-  if (!tweetId) return '';
-  const handle = textOf(username).replace(/^@/u, '');
-  return handle
-    ? `https://x.com/${encodeURIComponent(handle)}/status/${encodeURIComponent(tweetId)}`
-    : `https://x.com/i/status/${encodeURIComponent(tweetId)}`;
-}
-
-function isLikelyTweetId(value) {
-  return /^\d{5,}$/u.test(textOf(value));
 }
 
 function truncate(text, max) {
@@ -3392,10 +2548,7 @@ async function deleteDiscordThread(threadId) {
 }
 
 async function clearPendingForThread(threadId) {
-  const [selfTweet, mentionReaction] = await Promise.all([readPending(), readMentionPending()]);
-  if (selfTweet?.threadId && String(selfTweet.threadId) === String(threadId)) {
-    await removePending();
-  }
+  const mentionReaction = await readMentionPending();
   if (mentionReaction?.threadId && String(mentionReaction.threadId) === String(threadId)) {
     await archiveMentionPending(mentionReaction, 'expired-thread');
   }
