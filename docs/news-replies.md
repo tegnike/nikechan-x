@@ -1,6 +1,6 @@
 # AIニュースへの質問返信
 
-既存の mention-context → Hermesによる返信案 → mention-propose → Discord承認 → mention-approve の経路に記事参照を追加する。自動送信はしない。
+既存の mention-context → Codexによる返信案 → mention-propose → Discord承認 → mention-approve の経路に記事参照を追加する。自動送信はしない。
 
 ## 記事の特定と本文参照
 
